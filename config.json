@@ -1,0 +1,17 @@
+{
+  "markets": ["cn", "etf", "hk", "us", "fund"],
+  "filters": {
+    "cn":  { "min_amount": 150000000, "min_price": 2.0, "pct_range": [-7.5, 1.5], "top_by_amount": 60 },
+    "etf": { "min_amount": 50000000,  "min_price": 0.5, "pct_range": [-4.0, 1.0], "top_by_amount": 40 },
+    "hk":  { "min_amount": 30000000,  "min_price": 1.0, "pct_range": [-7.5, 1.5], "top_by_amount": 30 },
+    "us":  { "min_amount": 20000000,  "min_price": 1.0, "pct_range": [-7.5, 1.0], "top_by_amount": 30 }
+  },
+  "kline_budget": { "cn": 25, "etf": 20, "hk": 12, "us": 12 },
+  "top_picks_per_market": 8,
+  "backtest_top_n": 15,
+  "fund_watchlist": [
+    "161725", "005827", "270042", "519674", "320007",
+    "110011", "161005", "000961", "007301", "012414"
+  ],
+  "top_fund_picks": 5
+}
