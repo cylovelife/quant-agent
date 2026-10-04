@@ -6,12 +6,12 @@
     "vr_n": 5
   },
   "weights": {
-    "boll": 0.2414,
-    "rsi": 0.231,
-    "volume": 0.1351,
-    "trend": 0.1217,
-    "macd": 0.148,
-    "drawdown": 0.1228
+    "boll": 0.2394,
+    "rsi": 0.2299,
+    "volume": 0.1344,
+    "trend": 0.1214,
+    "macd": 0.1529,
+    "drawdown": 0.1221
   },
   "score_threshold": 62.0,
   "backtest": {
@@ -21,7 +21,55 @@
   },
   "iteration": {
     "min_samples": 20,
-    "lr": 0.25
+    "lr": 0.25,
+    "last_used_date": "2026-09-21",
+    "min_days": 20,
+    "last_diag": {
+      "n_days": 7,
+      "deff": 10.35,
+      "icc": 0.36,
+      "n_eff": 18,
+      "samples": 189
+    }
   },
-  "version": "20260912_1950"
+  "longterm": {
+    "weights": {
+      "quality": 0.26,
+      "growth": 0.14,
+      "cashflow": 0.16,
+      "balance": 0.08,
+      "valuation": 0.24,
+      "macro": 0.12
+    },
+    "fund_weights": {
+      "perf": 0.34,
+      "stability": 0.28,
+      "scale": 0.24,
+      "manager": 0.14
+    },
+    "min_samples": 40,
+    "lr": 0.2,
+    "version": "20260921_init"
+  },
+  "version": "20260922_revert",
+  "rollback": {
+    "at": "2026-09-22",
+    "from_version": "20260922_1923",
+    "reverted_weights": {
+      "boll": 0.2838,
+      "rsi": 0.0608,
+      "volume": 0.1617,
+      "trend": 0.1554,
+      "macd": 0.1923,
+      "drawdown": 0.146
+    },
+    "reason": "该次更新把 rsi 压到 0.05 下限，依据是未做组内去相关修正的 t=-3.82；按交易日分组后 rsi 的 IC=+0.017、t=+0.11，即纯噪声。同时 2026-09-11 为全天 ret 恒 0 的退化日。已加三道证据门禁后回滚。",
+    "diag": {
+      "n_days": 7,
+      "deff": 10.35,
+      "icc": 0.36,
+      "n_eff": 18,
+      "samples": 189
+    }
+  }
 }

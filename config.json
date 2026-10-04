@@ -1,17 +1,189 @@
 {
-  "markets": ["cn", "etf", "hk", "us", "fund"],
-  "filters": {
-    "cn":  { "min_amount": 150000000, "min_price": 2.0, "pct_range": [-7.5, 1.5], "top_by_amount": 60 },
-    "etf": { "min_amount": 50000000,  "min_price": 0.5, "pct_range": [-4.0, 1.0], "top_by_amount": 40 },
-    "hk":  { "min_amount": 30000000,  "min_price": 1.0, "pct_range": [-7.5, 1.5], "top_by_amount": 30 },
-    "us":  { "min_amount": 20000000,  "min_price": 1.0, "pct_range": [-7.5, 1.0], "top_by_amount": 30 }
-  },
-  "kline_budget": { "cn": 25, "etf": 20, "hk": 12, "us": 12 },
-  "top_picks_per_market": 8,
-  "backtest_top_n": 15,
-  "fund_watchlist": [
-    "161725", "005827", "270042", "519674", "320007",
-    "110011", "161005", "000961", "007301", "012414"
+  "markets": [
+    "cn",
+    "etf",
+    "hk",
+    "us",
+    "fund"
   ],
-  "top_fund_picks": 5
+  "filters": {
+    "cn": {
+      "min_amount": 150000000,
+      "min_price": 2.0,
+      "pct_range": [
+        -7.5,
+        1.5
+      ],
+      "top_by_amount": 60
+    },
+    "etf": {
+      "min_amount": 50000000,
+      "min_price": 0.5,
+      "pct_range": [
+        -4.0,
+        1.0
+      ],
+      "top_by_amount": 40
+    },
+    "hk": {
+      "min_amount": 30000000,
+      "min_price": 1.0,
+      "pct_range": [
+        -7.5,
+        1.5
+      ],
+      "top_by_amount": 30
+    },
+    "us": {
+      "min_amount": 20000000,
+      "min_price": 1.0,
+      "pct_range": [
+        -7.5,
+        1.0
+      ],
+      "top_by_amount": 30
+    }
+  },
+  "kline_budget": {
+    "cn": 25,
+    "etf": 20,
+    "hk": 12,
+    "us": 12
+  },
+  "fetch_budget_sec": 180,
+  "store": {
+    "enabled": true,
+    "path": "state/quant.db",
+    "kline_ttl_hours": 4
+  },
+  "datasource": {
+    "csc_enabled": true,
+    "csc_index_valuation": true,
+    "csc_index_type": "broad",
+    "csc_index_valuation_history": 3,
+    "csc_index_valuation_attempts": 8,
+    "csc_retry_attempts": 2,
+    "csc_retry_backoff_sec": 0.8,
+    "csc_industry_rank": true,
+    "csc_industry_rank_top": 10,
+    "akshare_enabled": true,
+    "akshare_min_gap_sec": 1.0,
+    "akshare_budget_sec": 90,
+    "akshare_event_budget_sec": 120,
+    "akshare_retries": 2,
+    "akshare_breaker_ttl_sec": 1800,
+    "akshare_margin_bse": false,
+    "akshare_lhb_lookback_days": 3,
+    "akshare_restriction_back_days": 7,
+    "akshare_restriction_forward_days": 120,
+    "akshare_margin_backfill_days": 3,
+    "spot_tier_order": {
+      "etf": [
+        "eastmoney",
+        "tencent",
+        "sina"
+      ],
+      "hk": [
+        "eastmoney",
+        "tencent",
+        "sina"
+      ],
+      "us": [
+        "eastmoney",
+        "tencent"
+      ]
+    },
+    "akshare_sina_budget_sec": 150
+  },
+  "ml": {
+    "horizon": 120,
+    "models": [
+      "ridge",
+      "gbr"
+    ],
+    "min_train_periods": 6,
+    "min_oof_periods": 8,
+    "purge": true,
+    "embargo_periods": 1,
+    "n_perm": 20,
+    "p_threshold": 0.1,
+    "seed": 0
+  },
+  "top_picks_per_market": 8,
+  "report": {
+    "brief": true
+  },
+  "backtest_top_n": 15,
+  "exit_model": {
+    "enabled": true,
+    "max_new_positions_per_market": 5,
+    "min_bucket_n": 20,
+    "shrink_k": 25,
+    "oos_frac": 0.3,
+    "backfill_lookback": 1
+  },
+  "fund_watchlist": [
+    "161725",
+    "005827",
+    "270042",
+    "519674",
+    "320007",
+    "110011",
+    "161005",
+    "000961",
+    "007301",
+    "012414"
+  ],
+  "top_fund_picks": 5,
+  "longterm": {
+    "enabled": true,
+    "min_float_mcap": 120.0,
+    "universe_leaders": 24,
+    "universe_cheap": 16,
+    "universe_fair": 16,
+    "max_analyze": 52,
+    "max_fund_analyze": 12,
+    "etf_per_group": 2,
+    "min_score": 62,
+    "top_stocks": 10,
+    "top_funds": 5,
+    "track_milestones": [
+      5,
+      20,
+      60,
+      120,
+      250
+    ],
+    "benchmark": "510300"
+  },
+  "model_select": {
+    "enabled": true,
+    "min_decisive_samples": 8,
+    "shorts": {
+      "hold_days": [
+        3,
+        5,
+        8
+      ],
+      "stop_loss": [
+        -0.03,
+        -0.05,
+        -0.08,
+        null
+      ],
+      "take_profit": [
+        0.05,
+        0.08,
+        null
+      ]
+    },
+    "longs": {
+      "weight_schemes": [
+        "default",
+        "quality_first",
+        "valuation_first",
+        "equal"
+      ]
+    }
+  }
 }
