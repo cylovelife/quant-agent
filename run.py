@@ -702,7 +702,10 @@ def run_new_sources_only() -> int:
 
 
 def main():
+    import research_cli
+
     ap = argparse.ArgumentParser()
+    research_cli.add_arguments(ap)
     ap.add_argument("--quick", action="store_true")
     ap.add_argument("--no-eval", action="store_true")
     ap.add_argument("--no-replay", action="store_true",
@@ -731,6 +734,15 @@ def main():
     ap.add_argument("--full", action="store_true",
                     help="输出完整版报告，覆盖 config.json 的 report.brief")
     args = ap.parse_args()
+
+    # The research path validates configuration and returns its real exit code.
+    # Existing dual-track dispatch below retains its configuration fallback.
+    if any((args.daily, args.sync_data, args.data_query, args.verify_snapshot,
+            args.sync_snapshot, args.offline, args.codes, args.start, args.end,
+            args.research_dir, args.bars is not None)):
+        params, cfg = load_configs()
+        apply_runtime_config(cfg)
+        return research_cli.run_command(args, cfg, params, ROOT)
 
     # 配置先行：让 --db-stats / --csc-probe 也认 config.json 里的路径与开关
     try:
@@ -1560,6 +1572,8 @@ if __name__ == "__main__":
     os.makedirs(LOG, exist_ok=True)
     t0 = time.time()
     try:
-        main()
+        raise SystemExit(main() or 0)
     finally:
-        log(f"总耗时 {time.time() - t0:.1f}s")
+        # Keep the data-query stdout valid JSON for callers piping it into tools.
+        with contextlib.redirect_stdout(sys.stderr if "--data-query" in sys.argv else sys.stdout):
+            log(f"总耗时 {time.time() - t0:.1f}s")

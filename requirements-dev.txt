@@ -1,0 +1,6 @@
+-r requirements.txt
+# Existing source and ML regressions require these optional runtime packages.
+akshare==1.19.3
+scikit-learn==1.7.2
+pytest==8.4.2
+ruff==0.14.3

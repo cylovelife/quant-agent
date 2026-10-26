@@ -1,0 +1,5 @@
+# Python 3.11 baseline verified for this repository.
+requests==2.32.5
+pandas==2.3.3
+numpy==1.26.4
+curl_cffi==0.17.0

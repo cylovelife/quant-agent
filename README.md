@@ -15,6 +15,56 @@
 
 ## 快速开始
 
+新增本地数据与每日研究入口（Python 3.11）：
+
+```bash
+uv venv --python python3.11 .venv
+uv pip sync --python .venv/bin/python --require-hashes requirements.lock
+.venv/bin/python run.py --daily           # 同步固定观察池 → 冻结数据 → 因子体检 → 台账
+.venv/bin/python run.py --daily --offline # 离线复跑；相同输入复用结论，不增加证据天数
+.venv/bin/python run.py --sync-data       # 仅更新观察池；前复权完整窗口修订，非只追加
+.venv/bin/python run.py --data-query --market etf --codes 510300,510500 --frequency 1w --fields date,close,volume --bars 8
+```
+
+`--daily` 是新增的**研究观察管线**；原有双轨入口仍按下方命令运行。观察池由
+`config.json.local_research` 定义，目前为 6 只 A 股和 6 只 ETF，不代表全市场。
+研究默认只用北京时间 16:00 前的前一日及更早日线，盘后才纳入当日数据；不修改生产参数。
+`--end YYYY-MM-DD` 可进一步限制截止日。周/月聚合先截断输入，日期取最后实际交易日，
+因此可能为部分周期，不把未来周末/月末写进数据。
+
+产物在 `state/research/`：`latest.json`、`ledger.db`、`research_<run_id>.md` 和
+`snapshots/<sha256>/`。台账保留参数、代码指纹、运行时版本、数据质量、历史 IC 和决策。
+阅读日报请打开 `state/research/latest.md` 或 `research_YYYY-MM-DD.md`：开头是研究
+优先级结论汇总（股票/ETF分别排序、每类最多3只且只选达阈值标的），列出关注理由、
+主要风险和后续确认信号；后面保留行情与全池评分概览。只读主报告即可了解研究结论。
+六因子评分依据、权重贡献、完整历史IC与来源另存于 `latest.details.md` 和
+`research_YYYY-MM-DD.details.md`，与主报告双向链接。两份报告使用同一记录和冻结快照。
+日期明确区分报告生成日与行情交易日。日线不足70根时保留行情、标注评分预热不足。
+确认信号是待复核的技术观察条件，不代表已回测通过的交易触发器，不会修改生产评分或自动交易。
+每日运行还会固定原观察轮次的高低点和参数，用登记后的完整日线自动核对价格突破、
+MACD、动态MA60和回踩量能。主报告标注已满足/待确认/已失效，以及首次满足和核验日期；
+缺行情、历史复权修订或输入覆盖不足时显示暂不可判定。跌破原观察低点终止该轮观察，
+连续入选不重设条件，退出后重新入选才建立新轮次。
+优先级变化严格比较前一交易日的实际研究留档；缺该日记录时明确提示无法比较，
+不回算旧行情冒充当时的推荐。语义与验证见 `docs/research/confirmation_tracking.md`。
+名称来自 `local_research.instrument_metadata` 中按市场和代码分区的已核对元数据，
+核对日期与来源随报告留档；未配置的代码标注“名称待核实”，不会猜填。
+每只标的附六因子原始指标、单项分、参数权重、加权贡献、主要约束与研究结论。
+评分沿用现有模型；低分表示不匹配当前低吸策略，不能据此评价基本面或长期价值。
+快照保留的是**当次抓到的前复权历史版本**，并不是完整的历史 point-in-time 数据库。
+新增交易日、历史修订、代码/参数变化与重复运行分开记录；没有通过样本外等门禁的
+研究结论固定为 `promotion_allowed=false`。数据缺失/坏价/过期/回退或同步失败返回退出码 2。
+
+```bash
+.venv/bin/python run.py --verify-snapshot state/research/snapshots/<sha256>
+.venv/bin/python run.py --sync-snapshot /path/to/snapshots/<sha256> --research-dir /path/to/mirror
+.venv/bin/python -m pytest -q tests/test_local_research.py
+```
+
+快照镜像只接受本地目录，验证大小与 SHA-256 后原子发布；不覆盖行情库。借鉴范围、
+上游源码核验、实际运行证据与后续 RSI 边界见
+[`docs/research/free_stockdb_adoption.md`](docs/research/free_stockdb_adoption.md)。
+
 ```bash
 python run.py                    # 完整：短线 + 长期 + 报告
 python run.py --mode short       # 只跑短线低吸轨

@@ -583,6 +583,11 @@ _KLINE_URLS = {
     "us": "https://web.ifzq.gtimg.cn/appstock/app/usfqkline/get",
 }
 
+# Current Tencent endpoint, also used by AKShare stock_zh_a_hist_tx.
+# Keep the legacy endpoint first; CN/ETF requests can fall back without changing
+# the price adjustment or volume convention consumed by existing strategies.
+_CN_KLINE_FALLBACK = "https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get"
+
 
 def _tx_code(code: str, market: str, mkt_id=None) -> str:
     code = str(code).strip()
@@ -645,36 +650,53 @@ def fetch_kline(code: str, market: str = "cn", limit: int = 300, mkt_id=None,
     # 而 _get 默认 retries=3 会让单个失败标的耗尽 3 源×15s + 3 次退避 ≈153s。
     # 把预算花在「多取几个标的」上，比反复重试同一个更有价值；
     # 单只失败退化为该标的本次无数据（外部还有 FetchBudget 兜总时长）。
-    try:
-        r = _get(_KLINE_URLS[market], params, retries=1).json()
-        d = (r.get("data") or {}).get(tx, {})
-        klines = d.get("qfqday") or d.get("day") or []
-    except Exception as e:
-        note_fallback(market, code, f"行情抓取失败，本次无数据: {e}")
-        return pd.DataFrame()
+    klines = []
+    source = "tencent_ifzq_qfq"
+    endpoints = [(_KLINE_URLS[market], source)]
+    if market in ("cn", "etf"):
+        endpoints.append((_CN_KLINE_FALLBACK, "tencent_proxy_ifzq_qfq"))
+    errors = []
+    for endpoint, endpoint_source in endpoints:
+        try:
+            r = _get(endpoint, params, retries=1).json()
+            d = (r.get("data") or {}).get(tx, {})
+            klines = d.get("qfqday") or d.get("day") or []
+        except (RuntimeError, ValueError, requests.RequestException) as e:
+            errors.append(str(e))
+            continue
+        if klines:
+            source = endpoint_source
+            break
 
     if not klines:
-        note_fallback(market, code, "行情源返回空，本次无数据")
+        note_fallback(market, code, "行情源返回空，本次无数据" +
+                      (f": {'; '.join(errors)}" if errors else ""))
         return pd.DataFrame()
 
     recs = []
     for item in klines:
-        # item: [date, open, close, high, low, volume, (amount|info)]
+        # Legacy: [date,open,close,high,low,volume,(amount|info)].
+        # Current CN/ETF endpoint: [..., volume, {}, turnover, amount_in_10k, ...].
         try:
+            amount = 0.0
+            if len(item) > 8 and isinstance(item[6], dict):
+                amount = float(item[8]) * 1e4
+            elif len(item) > 6 and isinstance(item[6], (str, float, int)):
+                if not str(item[6]).startswith("{"):
+                    amount = float(item[6])
             recs.append({"date": item[0], "open": float(item[1]), "close": float(item[2]),
                          "high": float(item[3]), "low": float(item[4]),
                          "volume": float(item[5]),
-                         "amount": float(item[6]) if len(item) > 6 and
-                                   isinstance(item[6], (str, float, int)) and
-                                   not item[6].startswith("{") else 0.0})
-        except (ValueError, AttributeError):
+                         "amount": amount})
+        except (ValueError, TypeError, IndexError):
             continue
     df = pd.DataFrame(recs)
     if df.empty:
         return df
     df["date"] = pd.to_datetime(df["date"])
+    df.attrs["source"] = source
     if use_db:
-        store.upsert_kline(market, code, "qfq", df, src="tencent_ifzq_qfq")
+        store.upsert_kline(market, code, "qfq", df, src=source)
     return df
 
 
