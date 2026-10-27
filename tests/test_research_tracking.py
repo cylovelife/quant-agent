@@ -407,3 +407,255 @@ def test_zero_average_volume_is_unknown_instead_of_failed_confirmation(params):
     )
     result = evaluate_watch(origin, append(frame, "2026-10-21", 9.8, 100), "2026-10-21")
     assert result["signals"]["volume"]["status"] == "unavailable"
+
+
+def test_volume_rounding_does_not_block_independent_signals(params):
+    origin = watch(params)
+    frame = bars()
+    frame["volume"] += 0.25
+    frame = append(append(frame, "2026-10-21", 10.3), "2026-10-22", 10.1, 60)
+    result = evaluate_watch(origin, frame, "2026-10-22")
+    assert {s["status"] for s in result["signals"].values()} == {"met"}
+    review = result["revision_review"]
+    assert review["volume"]["classification"] == "rounding_compatible"
+    assert review["volume"]["changed_rows"] == 100
+    assert review["volume"]["max_absolute_change"] == 0.25
+    lower, upper = result["signals"]["volume"]["value_range"]
+    assert lower < 0.6 and upper == pytest.approx(0.6)
+    assert origin["history"][-1]["volume"] == 100.0  # frozen input is never rewritten
+
+
+@pytest.mark.parametrize("delta,volume", [(0.25, 40.0), (-0.25, 90.0)])
+def test_volume_rounding_at_threshold_is_unknown_only_for_volume(params, delta, volume):
+    origin = watch(params)
+    frame = bars()
+    frame["volume"] += delta
+    frame = append(frame, "2026-10-21", 9.8, volume)
+    result = evaluate_watch(origin, frame, "2026-10-21")
+    assert result["signals"]["volume"]["status"] == "unavailable"
+    assert "阈值" in result["signals"]["volume"]["evidence"]
+    assert all(
+        result["signals"][key]["status"] != "unavailable"
+        for key in ("price", "macd", "trend")
+    )
+
+
+def test_material_volume_revision_keeps_price_checks_but_blocks_volume(params):
+    origin = watch(params)
+    frame = bars()
+    frame["volume"] *= 2
+    frame = append(append(frame, "2026-10-21", 10.3), "2026-10-22", 10.1, 60)
+    result = evaluate_watch(origin, frame, "2026-10-22")
+    assert result["signals"]["volume"]["status"] == "unavailable"
+    assert result["revision_review"]["volume"]["classification"] == "material_revision"
+    assert all(
+        result["signals"][key]["status"] == "met" for key in ("price", "macd", "trend")
+    )
+
+
+@pytest.mark.parametrize("delta", [0.50001, 1.0])
+def test_volume_rounding_allowance_has_an_absolute_limit(params, delta):
+    origin = watch(params)
+    frame = bars()
+    frame["volume"] += delta
+    frame = append(frame, "2026-10-21", 9.8, 60)
+    result = evaluate_watch(origin, frame, "2026-10-21")
+    assert result["signals"]["volume"]["status"] == "unavailable"
+    assert result["signals"]["trend"]["status"] != "unavailable"
+
+
+def test_fractional_volume_revisions_are_not_assumed_to_be_rounding(params):
+    frame = bars()
+    frame["volume"] += 0.1
+    origin = create_watch(
+        {
+            "data_date": "2026-10-20",
+            "created_at": "2026-10-20T18:30:00+08:00",
+            "run_id": "fractional",
+            "parameters": params,
+        },
+        {
+            "market": "cn",
+            "code": "000001",
+            "name": "测试",
+            "date": "2026-10-20",
+            "high": 10.0,
+            "low": 9.6,
+        },
+        frame,
+        "scope",
+    )
+    frame["volume"] += 0.1
+    result = evaluate_watch(origin, append(frame, "2026-10-21", 9.8, 60), "2026-10-21")
+    assert result["signals"]["volume"]["status"] == "unavailable"
+    assert result["signals"]["price"]["status"] != "unavailable"
+
+
+@pytest.mark.parametrize("delta", [0.5, 100.0])
+def test_volume_revision_cannot_hide_a_known_support_break(params, delta):
+    origin = watch(params)
+    frame = bars()
+    frame["volume"] += delta
+    result = evaluate_watch(origin, append(frame, "2026-10-21", 9.5), "2026-10-21")
+    assert result["invalidated_on"] == "2026-10-21"
+    assert {s["status"] for s in result["signals"].values()} == {"invalidated"}
+    assert "低点" in result["note"]
+    origin["evaluation"] = result
+    recovered = evaluate_watch(origin, append(frame, "2026-10-22", 10.5), "2026-10-22")
+    assert recovered["invalidated_on"] == "2026-10-21"
+
+
+def test_amount_revision_is_audited_without_blocking_unused_inputs(params):
+    origin = watch(params)
+    frame = bars()
+    frame["amount"] *= 2
+    result = evaluate_watch(origin, append(frame, "2026-10-21", 10.3), "2026-10-21")
+    assert result["signals"]["price"]["status"] == "met"
+    assert all(s["status"] != "unavailable" for s in result["signals"].values())
+    assert result["revision_review"]["amount"]["changed_rows"] == 100
+    assert "成交额" in result["note"]
+
+
+@pytest.mark.parametrize("field", ["open", "close", "high", "low"])
+def test_price_revision_still_blocks_every_signal(params, field):
+    origin = watch(params)
+    frame = bars()
+    frame.loc[20, field] += 0.01
+    frame["volume"] += 0.25
+    result = evaluate_watch(origin, append(frame, "2026-10-21", 9.5), "2026-10-21")
+    assert (
+        result["invalidated_on"] is None
+    )  # revised prices must not fake a support break
+    assert {s["status"] for s in result["signals"].values()} == {"unavailable"}
+
+
+@pytest.mark.parametrize(
+    "volume,status", [(30.0, "pending"), (60.0, "met"), (110.0, "pending")]
+)
+def test_half_hand_rounding_can_confirm_a_robust_volume_result(params, volume, status):
+    origin = watch(params)
+    frame = bars()
+    frame["volume"] += 0.5
+    result = evaluate_watch(
+        origin, append(frame, "2026-10-21", 9.8, volume), "2026-10-21"
+    )
+    assert result["signals"]["volume"]["status"] == status
+    assert result["revision_review"]["volume"]["max_absolute_change"] == 0.5
+
+
+def test_volume_interval_covers_mixed_rounding_not_just_two_endpoint_series(params):
+    origin = watch(params)
+    frame = bars()
+    frame.loc[95:99, "volume"] = [100.5, 99.5, 100.5, 99.5, 100.0]
+    # Both complete versions have mean=100 and ratio=0.4. Their per-bar
+    # uncertainty envelope straddles 0.4, so comparing only two ratios is unsafe.
+    result = evaluate_watch(origin, append(frame, "2026-10-21", 9.8, 40), "2026-10-21")
+    signal = result["signals"]["volume"]
+    assert signal["status"] == "unavailable"
+    lower, upper = signal["value_range"]
+    assert lower < 0.4 < upper
+
+
+def test_unknown_volume_preserves_first_met_date_and_non_pullback_state(params):
+    origin = watch(params)
+    frame = append(bars(), "2026-10-21", 9.8, 60)
+    origin["evaluation"] = evaluate_watch(origin, frame, "2026-10-21")
+    assert origin["evaluation"]["signals"]["volume"]["first_met_on"] == "2026-10-21"
+    frame.loc[frame.date <= "2026-10-20", "volume"] += 0.25
+    frame = append(frame, "2026-10-22", 9.8, 36.85)
+    result = evaluate_watch(origin, frame, "2026-10-22")
+    signal = result["signals"]["volume"]
+    assert signal["status"] == "unavailable"
+    assert signal["first_met_on"] == "2026-10-21"
+    later = evaluate_watch(origin, append(frame, "2026-10-23", 10.3), "2026-10-23")
+    assert later["signals"]["volume"] == signal
+
+
+def test_zero_denominator_in_volume_interval_stays_unknown(params):
+    frame = bars()
+    frame["volume"] = 0.0
+    origin = create_watch(
+        {
+            "data_date": "2026-10-20",
+            "created_at": "2026-10-20T18:30:00+08:00",
+            "run_id": "zero",
+            "parameters": params,
+        },
+        {
+            "market": "cn",
+            "code": "000001",
+            "name": "测试",
+            "date": "2026-10-20",
+            "high": 10.0,
+            "low": 9.6,
+        },
+        frame,
+        "scope",
+    )
+    frame["volume"] = 0.25
+    result = evaluate_watch(origin, append(frame, "2026-10-21", 9.8, 0.1), "2026-10-21")
+    assert result["signals"]["volume"]["status"] == "unavailable"
+    assert "value_range" not in result["signals"]["volume"]
+
+
+def test_revision_audit_is_visible_after_json_roundtrip(params):
+    from research_report import render_tracking
+
+    origin = watch(params)
+    frame = bars()
+    frame["volume"] += 0.25
+    origin["evaluation"] = evaluate_watch(
+        origin, append(frame, "2026-10-21", 9.8, 60), "2026-10-21"
+    )
+    record = {
+        "tracking": {
+            "watches": [origin],
+            "priority_changes": {"available": False, "note": "no baseline"},
+        }
+    }
+    restored = json.loads(json.dumps(record, sort_keys=True))
+    detailed = "\n".join(render_tracking(restored, detailed=True))
+    assert "历史输入修订 volume" in detailed
+    assert "rounding_compatible" in detailed
+    assert "0.250000000" in detailed
+
+
+def test_daily_revision_rerun_retains_history_and_does_not_increase_evidence(
+    tmp_path, monkeypatch, params
+):
+    db = tmp_path / "bars.db"
+    setup_db(db)
+    write_bars(db, bars())
+    params["score_threshold"] = 0
+    freeze_time(monkeypatch, "2026-10-20T18:30:00+08:00")
+    args = (db, {"cn": ["000001"]}, params, tmp_path / "research")
+    origin = daily_research.research_daily(*args, asof="2026-10-20")
+    write_bars(db, append(bars(), "2026-10-21", 10.3))
+    freeze_time(monkeypatch, "2026-10-21T18:30:00+08:00")
+    first = daily_research.research_daily(*args, asof="2026-10-21")
+    previous_report = Path(first["report_path"]).read_bytes()
+    revised = bars()
+    revised["volume"] += 0.25
+    write_bars(db, append(revised, "2026-10-21", 10.3))
+    current = daily_research.research_daily(*args, asof="2026-10-21")
+    assert current["run_id"] != first["run_id"]
+    assert current["evidence_days"] == first["evidence_days"] == 2
+    evaluation = current["tracking"]["watches"][0]["evaluation"]
+    assert evaluation["signals"]["price"]["status"] == "met"
+    assert evaluation["signals"]["price"]["first_met_on"] == "2026-10-21"
+    assert (
+        current["tracking"]["watches"][0]["watch_id"]
+        == origin["tracking"]["watches"][0]["watch_id"]
+    )
+    assert Path(first["report_path"]).read_bytes() == previous_report
+    latest_details = Path(current["daily_details_path"]).read_text()
+    assert "历史输入修订 volume" in latest_details
+    repeated = daily_research.research_daily(*args, asof="2026-10-21")
+    assert repeated["reused"] is True
+    assert repeated["tracking"] == current["tracking"]
+    with sqlite3.connect(tmp_path / "research/ledger.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM research_watches").fetchone()[0] == 1
+        payload = json.loads(
+            conn.execute("SELECT payload FROM research_watches").fetchone()[0]
+        )
+        assert payload["history"][-1]["volume"] == 100.0

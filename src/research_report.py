@@ -281,11 +281,17 @@ def render_report(record: dict) -> str:
         lines += ["**数据校验未通过，本次不生成优先关注清单。**", ""]
     contract = record.get("data_contract")
     if contract:
-        admitted = sum(item.get("new_signal_allowed", False) for item in contract["series"].values())
-        lines += [f"数据契约：{admitted} 个已加载标的满足本次新增模拟信号的数据条件；"
-                  "其余只保留历史观察或待核验状态。",
-                  "抓取来源与时间随冻结快照留档；发布时间、历史成分／退市／停牌覆盖不完整，"
-                  "快照完整性通过不等于完整历史当时可见数据。", ""]
+        admitted = sum(
+            item.get("new_signal_allowed", False)
+            for item in contract["series"].values()
+        )
+        lines += [
+            f"数据契约：{admitted} 个已加载标的满足本次新增模拟信号的数据条件；"
+            "其余只保留历史观察或待核验状态。",
+            "抓取来源与时间随冻结快照留档；发布时间、历史成分／退市／停牌覆盖不完整，"
+            "快照完整性通过不等于完整历史当时可见数据。",
+            "",
+        ]
     for market, label in (("etf", "ETF优先关注"), ("cn", "股票优先关注")):
         lines += [
             f"### {label}",
@@ -401,7 +407,8 @@ def render_tracking(record: dict, *, detailed: bool = False) -> list[str]:
         "## 确认信号逐日跟踪",
         "",
         "原观察高低点固定，登记后才核验。已满足表示最近适用日条件成立；已失效表示曾满足后回落，或原低点失守使整轮失效。",
-        "量能只核对回踩日（收盘≤前收），其他日沿用最近适用日结果；缺失或历史复权输入修订显示暂不可判定。",
+        "量能只核对回踩日（收盘≤前收），其他日沿用最近适用日结果；缺行情或历史价格／复权修订暂停核验。",
+        "成交量修订只影响量能：与取整兼容时按新旧输入区间核对，跨阈值或实质修订仍暂不可判定；不阻断可信的低点失守检查。成交额变化留痕但不参与四项条件。",
         "",
         "本次核验："
         + "，".join(f"{STATUS_LABELS[key]}{count}项" for key, count in counts.items())
@@ -444,6 +451,19 @@ def render_tracking(record: dict, *, detailed: bool = False) -> list[str]:
                 lines.append(
                     f"- {SIGNALS[key]}：{STATUS_LABELS[signal['status']]}；"
                     f"最近适用日{signal['checked_on'] or '尚无'}；{signal['evidence']}"
+                )
+            for field, revision in (
+                watch["evaluation"].get("revision_review", {}).items()
+            ):
+                lines.append(
+                    f"- 历史输入修订 {field}：{revision['changed_rows']}根；"
+                    f"最大绝对差{_number(revision['max_absolute_change'], 9)}"
+                    + (
+                        f"；分类{revision['classification']}"
+                        if "classification" in revision
+                        else ""
+                    )
+                    + "。"
                 )
             lines.append("")
     if not tracking["watches"]:

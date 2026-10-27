@@ -29,6 +29,7 @@ STATUS_LABELS = {
     "unavailable": "暂不可判定",
 }
 HISTORY_COLUMNS = ["date", "open", "close", "high", "low", "volume", "amount"]
+PRICE_FIELDS = ("open", "close", "high", "low")
 
 
 def ensure_tracking_schema(conn: sqlite3.Connection) -> None:
@@ -113,6 +114,72 @@ def _apply_signal(signals: dict, key: str, met: bool, day: str, evidence: str) -
     )
 
 
+def _review_revisions(overlap: pd.DataFrame) -> dict:
+    """Audit every field; half-hand compatibility is not a blanket numeric tolerance."""
+    review = {}
+    for field in HISTORY_COLUMNS[1:]:
+        old = overlap[field + "_old"].to_numpy(dtype=float)
+        new = overlap[field + "_new"].to_numpy(dtype=float)
+        changed = ~np.isclose(old, new, rtol=1e-10, atol=1e-10)
+        if not changed.any():
+            continue
+        finite = bool(np.isfinite(old).all() and np.isfinite(new).all())
+        largest = float(np.abs(new - old).max()) if finite else None
+        detail = {
+            "changed_rows": int(changed.sum()),
+            "max_absolute_change": largest,
+        }
+        if field == "volume":
+            # A whole-hand series and its more precise version can differ by at
+            # most half a hand. Both versions still bound the decision below;
+            # this shape alone never proves that a revision is harmless.
+            integer_version = bool(
+                np.equal(old, np.rint(old)).all() or np.equal(new, np.rint(new)).all()
+            )
+            compatible = (
+                finite
+                and bool((old >= 0).all() and (new >= 0).all())
+                and integer_version
+                and largest <= 0.5
+            )
+            detail["classification"] = (
+                "rounding_compatible" if compatible else "material_revision"
+            )
+        review[field] = detail
+    return review
+
+
+def _volume_bounds(
+    combined: pd.DataFrame, current: pd.DataFrame, params: dict
+) -> tuple[pd.Series, pd.Series]:
+    """Enclose every mixture of the frozen and revised rolling-volume inputs."""
+    old = combined["volume"].reset_index(drop=True)
+    revised = current.set_index("date")["volume"].reindex(combined["date"])
+    revised = revised.reset_index(drop=True).fillna(old)
+    lower = pd.concat([old, revised], axis=1).min(axis=1)
+    upper = pd.concat([old, revised], axis=1).max(axis=1)
+    n = params.get("indicators", {}).get("vr_n", 5)
+    # The numerator is the observed eligible day's volume. Only the original
+    # warmup is being compared; all post-origin observations are shared.
+    mean_low = lower.shift(1).rolling(n, min_periods=n).mean()
+    mean_high = upper.shift(1).rolling(n, min_periods=n).mean()
+    return old / mean_high.replace(0, np.nan), old / mean_low.replace(0, np.nan)
+
+
+def _unknown_volume(signals: dict, watch: dict, day: str, evidence: str) -> None:
+    """Keep prior recorded first-confirmation dates when a revision prevents replay."""
+    signal = signals["volume"]
+    previous = watch.get("evaluation", {}).get("signals", {}).get("volume", {})
+    signal.pop("value_range", None)
+    signal.update(
+        status="unavailable",
+        first_met_on=signal["first_met_on"] or previous.get("first_met_on"),
+        invalidated_on=signal["invalidated_on"] or previous.get("invalidated_on"),
+        checked_on=day,
+        evidence=evidence,
+    )
+
+
 def evaluate_watch(
     watch: dict,
     frame: pd.DataFrame | None,
@@ -151,18 +218,22 @@ def evaluate_watch(
     overlap = history.merge(
         current[HISTORY_COLUMNS], on="date", suffixes=("_old", "_new")
     )
-    for field in HISTORY_COLUMNS[1:]:
-        if not np.allclose(
-            overlap[field + "_old"], overlap[field + "_new"], rtol=1e-10, atol=1e-10
-        ):
-            return _unavailable(
-                watch, day, "历史行情输入已修订，旧前复权条件暂不可比，须复核。"
-            )
+    review = _review_revisions(overlap)
+    price_changes = [field for field in PRICE_FIELDS if field in review]
+    if price_changes:
+        blocked = _unavailable(
+            watch,
+            day,
+            f"历史价格输入已修订（{', '.join(price_changes)}），旧前复权条件暂不可比，须复核。",
+        )
+        return dict(blocked, revision_review=review)
     combined = pd.concat(
         [history, current[current["date"] > watch["origin_date"]][HISTORY_COLUMNS]],
         ignore_index=True,
     )
     indicators = add_indicators(combined, watch["parameters"])
+    lower_vr, upper_vr = _volume_bounds(combined, current, watch["parameters"])
+    volume_revision = review.get("volume", {})
     signals = _new_signals()
     signals["volume"]["evidence"] = "尚无登记后的回踩日，等待适用行情。"
     invalidated_on = None
@@ -205,24 +276,59 @@ def evaluate_watch(
         else:
             signals["trend"].update(status="unavailable", evidence="MA60历史不足。")
         if i > 0 and row["close"] <= indicators.iloc[i - 1]["close"]:
-            if np.isfinite(row["vr"]):
+            low, high = float(lower_vr.iloc[i]), float(upper_vr.iloc[i])
+            if volume_revision.get("classification") == "material_revision":
+                _unknown_volume(
+                    signals,
+                    watch,
+                    dt,
+                    "历史成交量存在实质修订或不符合取整差异，仅量能暂不可判定。",
+                )
+            elif not (np.isfinite(low) and np.isfinite(high)):
+                _unknown_volume(
+                    signals, watch, dt, "量比无法计算（历史不足或均量为零）。"
+                )
+            elif 0.4 <= low <= high <= 0.9 or high < 0.4 or low > 0.9:
                 _apply_signal(
                     signals,
                     "volume",
-                    bool(0.4 <= row["vr"] <= 0.9),
+                    bool(0.4 <= low <= high <= 0.9),
                     dt,
                     f"回踩日量比{row['vr']:.3f}，要求[0.4,0.9]且原低点不失守。",
                 )
+                signals["volume"]["value_range"] = [low, high]
+                if volume_revision:
+                    signals["volume"]["evidence"] += (
+                        f"新旧输入量比区间[{low:.9f},{high:.9f}]，判断一致。"
+                    )
             else:
-                signals["volume"].update(
-                    status="unavailable",
-                    evidence="量比无法计算（历史不足或均量为零）。",
+                _unknown_volume(
+                    signals,
+                    watch,
+                    dt,
+                    f"新旧输入量比区间[{low:.9f},{high:.9f}]跨越[0.4,0.9]阈值，仅量能暂不可判定。",
                 )
+                signals["volume"]["value_range"] = [low, high]
+    notes = [
+        "原观察低点已失守，本轮终止，不自动复活。"
+        if invalidated_on
+        else "量能只核对回踩日，其余日沿用最近适用日状态；首次满足日期不随重跑增加。"
+    ]
+    if volume_revision:
+        kind = (
+            "与1手取整兼容，按新旧输入区间复核量能"
+            if volume_revision["classification"] == "rounding_compatible"
+            else "存在实质修订或不符合取整差异，保护量能判断"
+        )
+        notes.append(f"历史成交量{kind}；不阻断独立价格条件和低点保护。")
+    if "amount" in review:
+        notes.append("历史成交额已修订并留痕，不参与这四项条件。")
     return {
         "checked_on": day,
         "invalidated_on": invalidated_on,
         "signals": signals,
-        "note": "量能只核对回踩日，其余日沿用最近适用日状态；首次满足日期不随重跑增加。",
+        "note": "".join(notes),
+        "revision_review": review,
     }
 
 
