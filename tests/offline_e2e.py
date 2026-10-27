@@ -5,6 +5,7 @@
 用法：
     python tests/offline_e2e.py            # 有缓存则离线跑
     python tests/offline_e2e.py --refresh  # 强制重新拉 K 线（需要网络）
+    python tests/offline_e2e.py --synthetic  # 纯构造行情，不读真实推荐或联网
 
 覆盖的回归点（每一条都曾真实出过问题）：
 1. 建仓幂等：同一天重复建仓必须新增 0 只；
@@ -32,12 +33,34 @@ import os
 import pickle
 import shutil
 import sys
+import subprocess
+import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
 CACHE = "/tmp/quant_exit_e2e_klines.pkl"
 TMP = "/tmp/quant_exit_e2e"
+
+
+def synthetic_kline_map() -> dict:
+    """Deterministic OHLC fixtures for integration, not a market-performance test."""
+    import numpy as np
+    import pandas as pd
+
+    result = {}
+    for market in ("cn", "etf"):
+        for number in range(6):
+            rng = np.random.default_rng(100 + number)
+            t = np.arange(300)
+            close = 100 + 4 * np.sin(t / 5 + number) + t * .01 + rng.normal(0, .3, len(t))
+            result[(market, f"{number + 1:06d}")] = pd.DataFrame({
+                "date": pd.bdate_range(end="2026-09-18", periods=len(t)),
+                "open": close * (1 + rng.normal(0, .002, len(t))),
+                "close": close, "high": close * 1.01, "low": close * .99,
+                "volume": rng.lognormal(15, .2, len(t)),
+            })
+    return result
 
 
 def build_kline_map(refresh: bool = False) -> dict:
@@ -81,9 +104,13 @@ def build_kline_map(refresh: bool = False) -> dict:
 
 
 def main():
+    global TMP
     ap = argparse.ArgumentParser()
     ap.add_argument("--refresh", action="store_true")
+    ap.add_argument("--synthetic", action="store_true")
     args = ap.parse_args()
+    if args.synthetic:
+        TMP = tempfile.mkdtemp(prefix="quant_e2e_synthetic_")
 
     import pandas as pd  # noqa: F401  (确保依赖可用)
 
@@ -99,7 +126,7 @@ def main():
     rpt.REPORT_DIR = os.path.join(TMP, "reports")
     os.makedirs(rpt.REPORT_DIR, exist_ok=True)
 
-    kmap = build_kline_map(args.refresh)
+    kmap = synthetic_kline_map() if args.synthetic else build_kline_map(args.refresh)
     params = json.load(open(os.path.join(ROOT, "params", "params.json"), encoding="utf-8"))
     cfg = json.load(open(os.path.join(ROOT, "config.json"), encoding="utf-8"))
     today = "2026-09-20"
@@ -109,14 +136,14 @@ def main():
     # ---- 1) 账本：回填 → 结算 → 建仓 → 幂等性 ----
     book = portfolio.load_book()
     cal = portfolio.trading_calendar(kmap)
-    pf = portfolio.latest_picks_file(before=today)
+    pf = portfolio.latest_picks_file(before=today, state_dir=TMP)
 
     def cached_kline(code, market, mkt_id=None):
         return kmap.get((market, str(code)))
 
-    st = portfolio.backfill_from_picks(book, pf, cached_kline, params, today, cal,
-                                       max_per_market=cap)
-    print(f"[1] 回填 {os.path.basename(pf)}: 开仓 {st['opened']} / 已平 {st['closed']} "
+    st = (portfolio.backfill_from_picks(book, pf, cached_kline, params, today, cal,
+                                        max_per_market=cap) if pf else {"opened": 0, "closed": 0, "skipped": 0})
+    print(f"[1] 回填 {os.path.basename(pf) if pf else '无v2留档'}: 开仓 {st['opened']} / 已平 {st['closed']} "
           f"/ 跳过 {st['skipped']}")
     held = portfolio.open_positions(book)
     per_mkt = {}
@@ -130,17 +157,16 @@ def main():
                                              "pct": 0.0,
                                              "date": str(kmap[(p["market"], str(p["code"]))].iloc[-1]["date"])[:10]}
               for p in held if (p["market"], str(p["code"])) in kmap}
-    closed = portfolio.settle_book(book, quotes, cal, params, today)
+    closed = portfolio.settle_book(book, quotes, cal, params, today, kline_fn=cached_kline)
     print(f"    结算：行情命中 {len(quotes)}/{len(held)}，平仓 {len(closed)} 只")
 
-    picks_json = json.load(open(os.path.join(ROOT, "state", "picks_2026-09-20.json"),
-                                encoding="utf-8"))
     pbm = {}
-    for p in picks_json["picks"]:
-        pbm.setdefault(p["market"], []).append(p)
+    for (market, code), frame in kmap.items():
+        pbm.setdefault(market, []).append({"code": str(code), "name": str(code),
+                                          "score": 70, "price": float(frame.close.iloc[-1])})
     added1 = portfolio.add_positions(book, pbm, params, today, cap)
     added2 = portfolio.add_positions(book, pbm, params, today, cap)
-    print(f"[2] 建仓 {len(added1)} 只；重复建仓 {len(added2)} 只（期望 0）")
+    print(f"[2] 登记待入场信号 {len(added1)} 条；重复登记 {len(added2)} 条（期望 0）")
     if added2:
         fails.append(f"建仓不幂等：重复运行为 {len(added2)} 只")
     per_mkt = {}
@@ -150,7 +176,9 @@ def main():
         fails.append(f"当日建仓超过 2×上限 {cap}: {per_mkt}")
 
     # ---- 2) 离场模型 + 卖出建议 ----
-    model = fit_exit_model(kmap, params)
+    dates = sorted({str(x)[:10] for frame in kmap.values() for x in frame["date"]})
+    bounds = {"validation_start": dates[int(len(dates)*0.55)], "test_start": dates[int(len(dates)*0.8)], "test_end": dates[-1]}
+    model = fit_exit_model(kmap, params, boundaries=bounds)
     val = model["validation"]
     print(f"[3] 离场模型 {model['n_symbols']}只/{model['n_trades']}笔，状态桶 "
           f"{len(model['states'])}，τ*={val['tau'] * 100:+.1f}%，t_min*={val['t_min']}")
@@ -226,121 +254,20 @@ def main():
         if bad:
             fails.append(f"结论分支「{name}」出现矛盾的措辞：{forbid}")
 
-    # ---- 6) 迭代完整性：复盘记账幂等 + 无新样本不调权 + 新权重真的落盘 ----
-    # 这三条都曾真实出问题：盲 append 把同一批样本记两次（名义 N 翻倍 → t 值假显著）；
-    # 同日复跑让权重在无新信息时连续漂移；算出的新权重没写回 params，
-    # 导致版本号照升而数字一动不动，整个调权闭环静默失效。
-    import tempfile
+    # ---- 6–8) Versioned signal/fill/label regressions use constructed daily bars. ----
     import evaluate as ev
+    from trade_semantics import LABEL_VERSION, LabelSpec
 
-    itmp = tempfile.mkdtemp(prefix="qt_iter_e2e_")
-    ev.STATE, ev.PARAMS_DIR = itmp, itmp
-    json.dump({"date": "2026-09-20", "picks": [
-        {"code": "600519", "name": "贵州茅台", "market": "cn", "score": 70,
-         "entry_price": 100.0, "f_boll": 60, "f_rsi": 50, "f_volume": 40,
-         "f_trend": 30, "f_macd": 20, "f_drawdown": 10},
-        {"code": "000333", "name": "美的集团", "market": "cn", "score": 68,
-         "entry_price": 50.0, "f_boll": 55, "f_rsi": 45, "f_volume": 35,
-         "f_trend": 25, "f_macd": 15, "f_drawdown": 8}]},
-        open(os.path.join(itmp, "picks_2026-09-20.json"), "w"), ensure_ascii=False)
-    qfn = lambda c, m, i=None: {"600519": 102.0, "000333": 49.0}[c]  # noqa: E731
-    oc = os.path.join(itmp, "outcomes.csv")
-    for _ in range(3):
-        ev.evaluate_previous(qfn, "2026-09-21")
-    n_rows = len(pd.read_csv(oc))
-    print(f"[8] 复盘记账幂等：3 次复盘后 outcomes 行数 {n_rows}（期望 2）")
-    if n_rows != 2:
-        fails.append(f"复盘记账非幂等：3 次复盘记了 {n_rows} 行（期望 2）")
-    saved_codes = [str(c) for c in pd.read_csv(oc, dtype={"code": str})["code"]]
-    if saved_codes != ["600519", "000333"]:
-        fails.append(f"outcomes 的 code 未按字符串保存（前导零会丢）：{saved_codes}")
-
-    # 6b) 构造一批「boll 强预测收益、其余因子无信息」的样本，
-    #     调权后 boll 权重必须真的变大，且落盘的 params.json 与之一致。
-    utmp = tempfile.mkdtemp(prefix="qt_iter_write_")
-    ev.STATE, ev.PARAMS_DIR = utmp, utmp
-    urows = []
-    for i in range(40):
-        fb = 20 + i * 1.5                       # 单调递增
-        urows.append({"date": "2026-09-20", "code": f"S{i:03d}", "market": "cn",
-                      "score": 60, "f_boll": fb, "f_rsi": 50.0, "f_volume": 30.0,
-                      "f_trend": 40.0, "f_macd": 25.0, "f_drawdown": 15.0,
-                      "ret": (fb - 50) / 1000.0})   # 与 f_boll 完全共变
-    pd.DataFrame(urows).to_csv(os.path.join(utmp, "outcomes.csv"), index=False)
-    uparams = {"weights": {"boll": .25, "rsi": .25, "volume": .15,
-                           "trend": .1, "macd": .15, "drawdown": .1},
-               "iteration": {"min_samples": 20, "lr": 0.25}}
-    r1 = ev.update_weights(uparams, min_samples=20, lr=0.25, min_days=1)
-    r2 = ev.update_weights(uparams, min_samples=20, lr=0.25, min_days=1)
-    print(f"[8] 无新样本调权守卫：首次 {r1['updated']} / 复跑 {r2['updated']}（期望 True / False）")
-    if not r1["updated"] or r2["updated"]:
-        fails.append(f"调权守卫失效：首次 {r1['updated']}，复跑 {r2['updated']}（应 True/False）")
-    if r1.get("data_through") != "2026-09-20":
-        fails.append(f"调权基线日期不对：{r1.get('data_through')}")
-    # 新权重必须写回 params 内存对象
-    if uparams["weights"]["boll"] <= 0.25:
-        fails.append(f"新权重未写回 params：boll={uparams['weights']['boll']}（应 >0.25）")
-    # 且必须真的落盘（旧 bug：算完丢掉，盘上还是旧数字）
-    on_disk = json.load(open(os.path.join(utmp, "params.json"), encoding="utf-8"))
-    print(f"[8] 权重重算落盘：boll {0.25} → 内存 {uparams['weights']['boll']} / 盘上 {on_disk['weights']['boll']}")
-    if on_disk["weights"]["boll"] <= 0.25:
-        fails.append(f"新权重未落盘：盘上 boll={on_disk['weights']['boll']}（应 >0.25）")
-    if on_disk["weights"] != uparams["weights"]:
-        fails.append("落盘权重与内存不一致")
-    if on_disk.get("iteration", {}).get("last_used_date") != "2026-09-20":
-        fails.append(f"last_used_date 未落盘：{on_disk.get('iteration')}")
-    shutil.rmtree(itmp, ignore_errors=True)
-    shutil.rmtree(utmp, ignore_errors=True)
-
-    # ---- 7) 复盘新鲜度守卫：行情没推进到推荐日之后，不得复盘 ----
-    # 曾真实发生：推荐当天深夜跑第二次、或次日凌晨盘前补跑，取到的最新价
-    # 仍是推荐日自己的收盘价 → 一整批 ret=0 的退化样本进 outcomes.csv，
-    # 把相关性与 t 值一起稀释向 0，等于用假数据做迭代。
-    ftmp = tempfile.mkdtemp(prefix="qt_fresh_")
-    ev.STATE, ev.PARAMS_DIR = ftmp, ftmp
-    json.dump({"date": "2026-09-20", "picks": [
-        {"code": "600519", "name": "贵州茅台", "market": "cn", "score": 70,
-         "entry_price": 100.0, "f_boll": 60, "f_rsi": 50, "f_volume": 40,
-         "f_trend": 30, "f_macd": 20, "f_drawdown": 10}]},
-        open(os.path.join(ftmp, "picks_2026-09-20.json"), "w"), ensure_ascii=False)
-    q1 = lambda c, m, i=None: 102.0  # noqa: E731
-
-    def _kfn(dates):
-        def f(code, market, mkt_id=None):
-            return pd.DataFrame({"date": pd.to_datetime(dates),
-                                 "close": [1.0] * len(dates)})
-        return f
-
-    fpath = os.path.join(ftmp, "outcomes.csv")
-    s_stale = ev.evaluate_previous(q1, "2026-09-21", kline_fn=_kfn(["2026-09-18", "2026-09-20"]))
-    n_stale = len(pd.read_csv(fpath)) if os.path.exists(fpath) else 0
-    print(f"[9] 新鲜度守卫（行情未推进）：skipped={bool(s_stale.get('skipped'))} "
-          f"outcomes 行数={n_stale}（期望 True / 0）")
-    if not s_stale.get("skipped") or n_stale != 0:
-        fails.append(f"新鲜度守卫失效：行情未推进仍复盘"
-                     f"（skipped={s_stale.get('skipped')}, rows={n_stale}）")
-
-    s_fresh = ev.evaluate_previous(q1, "2026-09-21", kline_fn=_kfn(["2026-09-20", "2026-09-21"]))
-    n_fresh = len(pd.read_csv(fpath)) if os.path.exists(fpath) else 0
-    print(f"[9] 新鲜度守卫（行情已推进）：skipped={bool(s_fresh.get('skipped'))} "
-          f"outcomes 行数={n_fresh}（期望 False / 1）")
-    if s_fresh.get("skipped") or n_fresh != 1:
-        fails.append(f"新鲜度守卫过严：行情已推进仍拒评"
-                     f"（skipped={s_fresh.get('skipped')}, rows={n_fresh}）")
-    shutil.rmtree(ftmp, ignore_errors=True)
-
-    # ---- 8) 账期取「行情最新交易日」，不取墙钟日期 ----
-    # 盘前/非交易日运行时最新 K 线仍是上一交易日的。若按墙钟日期给推荐命名，
-    # 会得到一份「日期是今天、价格是昨天」的推荐 → 次日复盘把两天的涨跌记成一天。
-    dtmp = tempfile.mkdtemp(prefix="qt_date_")
-    ev.STATE = dtmp
-    p = ev.save_today_picks([{"code": "600519"}], {}, data_date="2026-09-21")
-    wrote = os.path.basename(p)
-    d = json.load(open(p, encoding="utf-8"))
-    print(f"[10] 账期落盘：文件名 {wrote} / 内嵌 date={d.get('date')}（期望 picks_2026-09-21.json / 2026-09-21）")
-    if wrote != "picks_2026-09-21.json" or d.get("date") != "2026-09-21":
-        fails.append(f"账期未按行情交易日命名：{wrote} / {d.get('date')}")
-    shutil.rmtree(dtmp, ignore_errors=True)
+    result = subprocess.run([sys.executable, "-m", "pytest", "-q",
+                             os.path.join(ROOT, "tests", "test_trade_semantics.py"),
+                             os.path.join(ROOT, "tests", "test_data_contract.py"),
+                             os.path.join(ROOT, "tests", "test_execution.py"),
+                             os.path.join(ROOT, "tests", "test_paper_ledger.py"),
+                             os.path.join(ROOT, "tests", "test_corporate_actions.py"),
+                             os.path.join(ROOT, "tests", "test_temporal_validation.py")],
+                            cwd=ROOT, check=False)
+    if result.returncode:
+        fails.append("跨模块交易语义／数据契约／订单模拟／事件账本／公司行动／时间切分回归失败")
 
     # ---- 9) 调权的三道证据门禁：交易日数 / 退化日 / DEFF 修正 ----
     # 曾真实发生：9 个交易日的样本被当成 220+ 笔独立观测，t 值被放大
@@ -360,7 +287,9 @@ def main():
     grows += [{"date": "2026-09-19", "code": f"Z{i:03d}", "market": "cn", "score": 60,
                "f_boll": 40.0, "f_rsi": 50.0, "f_volume": 30.0, "f_trend": 40.0,
                "f_macd": 25.0, "f_drawdown": 15.0, "ret": 0.0} for i in range(20)]
-    gpath = os.path.join(gtmp, "outcomes.csv")
+    gpath = os.path.join(gtmp, "outcomes_v2.csv")
+    for row in grows:
+        row.update(label_version=LABEL_VERSION, label_id=LabelSpec().label_id)
     pd.DataFrame(grows).to_csv(gpath, index=False)
 
     gparams = {"weights": {"boll": .25, "rsi": .25, "volume": .15,
@@ -456,7 +385,6 @@ def main():
     # 心跳解决另一个问题：长阶段日志一片空白时，「在算」与「被冻」看起来完全一样，
     # 项目里曾把一次机器休眠误判成「卡死 2 小时」。这三条都属于「错了不会自己暴露」，
     # 必须由测试兜住。
-    import tempfile
     import time as _time
     import phase_cache as pc
     sys.path.insert(0, ROOT)

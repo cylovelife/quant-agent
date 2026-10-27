@@ -13,6 +13,8 @@ from typing import Sequence
 
 import pandas as pd
 
+from data_quality import capture_provenance
+
 BAR_FIELDS = ("date", "open", "close", "high", "low", "volume", "amount", "src")
 PRICE_FIELDS = ("open", "close", "high", "low")
 
@@ -89,11 +91,13 @@ class LocalData:
         ) as conn:
             conn.row_factory = sqlite3.Row
             conn.execute("BEGIN")
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(kline)")}
+            fetched = "fetched_at" if "fetched_at" in columns else "NULL AS fetched_at"
             for offset in range(0, len(symbols), 300):
                 batch = symbols[offset : offset + 300]
                 placeholders = ",".join("?" for _ in batch)
                 sql = (
-                    f"SELECT code, {','.join(BAR_FIELDS)} FROM kline "
+                    f"SELECT code, {','.join(BAR_FIELDS)}, {fetched} FROM kline "
                     f"WHERE market=? AND adjust=? AND code IN ({placeholders})"
                 )
                 values = [market, adjust, *batch]
@@ -110,12 +114,24 @@ class LocalData:
                 data = pd.DataFrame(rows)
                 data["date"] = pd.to_datetime(data["date"], errors="raise")
                 for code, group in data.groupby("code", sort=False):
-                    bars = group[list(BAR_FIELDS)].reset_index(drop=True)
+                    bars = group[[*BAR_FIELDS, "fetched_at"]].reset_index(drop=True)
+                    original = bars.copy()
                     if frequency != "1d":
                         bars = _aggregate(bars, frequency)
                     if limit is not None:
                         bars = bars.tail(limit)
+                    source_rows = original[original.date.isin(bars.date)]
+                    metadata_frame = bars.copy()
+                    metadata_frame.attrs["data_provenance"] = capture_provenance(source_rows, market, code, adjust)
+                    provenance = capture_provenance(metadata_frame, market, code, adjust)
+                    if frequency != "1d" and not bars.empty:
+                        periods = original.date.dt.to_period("W-FRI" if frequency == "1w" else "M")
+                        selected = bars.date.dt.to_period("W-FRI" if frequency == "1w" else "M")
+                        inputs = capture_provenance(original[periods.isin(selected)], market, code, adjust)
+                        provenance["aggregation"] = {"frequency": frequency, "input_observations": inputs["observations"],
+                                                      "input_price_version": inputs["price_version"]}
                     result[code] = bars[projection].reset_index(drop=True)
+                    result[code].attrs["data_provenance"] = provenance
         return result
 
 

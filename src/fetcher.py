@@ -13,7 +13,7 @@ import json
 import os
 import re
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 
 import pandas as pd
 import requests
@@ -216,6 +216,7 @@ def fetch_cn_rank(top: int = 400) -> pd.DataFrame:
     # 周末补跑时写的就是周末，语义上不冒充交易日。
     store.upsert_rank_snapshot("cn", "pct_down", date.today().isoformat(), out,
                                src="tencent_rank_pct")
+    out.attrs["source"] = "tencent_rank_pct"
     return out
 
 
@@ -276,6 +277,7 @@ def fetch_spot_list(market: str, pages: int = 2) -> pd.DataFrame:
     if not df.empty:
         store.upsert_rank_snapshot(market, "amount", date.today().isoformat(),
                                    df, src=served_by)
+        df.attrs["source"] = served_by
     return df
 
 
@@ -656,11 +658,27 @@ def fetch_kline(code: str, market: str = "cn", limit: int = 300, mkt_id=None,
     if market in ("cn", "etf"):
         endpoints.append((_CN_KLINE_FALLBACK, "tencent_proxy_ifzq_qfq"))
     errors = []
+    raw_only = False
+    raw_supplement = None
     for endpoint, endpoint_source in endpoints:
         try:
             r = _get(endpoint, params, retries=1).json()
+            if not isinstance(r, dict) or not isinstance(r.get("data"), dict):
+                errors.append(f"{endpoint_source}: invalid response envelope")
+                continue
             d = (r.get("data") or {}).get(tx, {})
-            klines = d.get("qfqday") or d.get("day") or []
+            if not isinstance(d, dict):
+                errors.append(f"{endpoint_source}: invalid symbol payload")
+                continue
+            klines = d.get("qfqday") or []
+            if not klines:
+                if d.get("day"):
+                    raw_only = True
+                    raw_supplement = {"symbol": tx, "source": endpoint_source + "_day_response",
+                                      "endpoint": endpoint, "parameters": dict(params), "day": d["day"]}
+                    errors.append(f"{endpoint_source}: qfqday missing; day (raw) rejected")
+                else:
+                    errors.append(f"{endpoint_source}: qfqday missing or empty")
         except (RuntimeError, ValueError, requests.RequestException) as e:
             errors.append(str(e))
             continue
@@ -669,11 +687,28 @@ def fetch_kline(code: str, market: str = "cn", limit: int = 300, mkt_id=None,
             break
 
     if not klines:
-        note_fallback(market, code, "行情源返回空，本次无数据" +
-                      (f": {'; '.join(errors)}" if errors else ""))
-        return pd.DataFrame()
+        if market == "etf":
+            from datasources.etf_qfq_source import fetch_etf_qfq
+            from pathlib import Path
+            fallback = fetch_etf_qfq(str(code), int(limit), get=_get,
+                                     receipt_dir=Path(CACHE_DIR) / "etf_qfq_factors",
+                                     supplement=raw_supplement)
+            if not fallback.empty:
+                if use_db:
+                    store.upsert_kline(market, code, "qfq", fallback, src=fallback.attrs["source"])
+                return fallback
+            errors.append("sina_etf_cash_qfq: " + fallback.attrs.get("fetch_failure", {}).get("reason", "unavailable"))
+        reason = "; ".join(errors) or "qfqday missing or empty"
+        note_fallback(market, code, "前复权行情不可用，本次无数据: " + reason)
+        empty = pd.DataFrame()
+        empty.attrs["fetch_failure"] = {
+            "kind": "adjustment_unavailable" if raw_only else "source_empty_or_unavailable",
+            "reason": reason,
+        }
+        return empty
 
     recs = []
+    invalid_rows = False
     for item in klines:
         # Legacy: [date,open,close,high,low,volume,(amount|info)].
         # Current CN/ETF endpoint: [..., volume, {}, turnover, amount_in_10k, ...].
@@ -689,13 +724,23 @@ def fetch_kline(code: str, market: str = "cn", limit: int = 300, mkt_id=None,
                          "volume": float(item[5]),
                          "amount": amount})
         except (ValueError, TypeError, IndexError):
+            invalid_rows = True
             continue
     df = pd.DataFrame(recs)
     if df.empty:
         return df
-    df["date"] = pd.to_datetime(df["date"])
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
     df.attrs["source"] = source
-    if use_db:
+    df.attrs["fetched_at"] = datetime.now(timezone.utc).isoformat()
+    df.attrs["adjust"] = "qfq"
+    from data_quality import assess_bars
+
+    issues = assess_bars(df, str(df.date.max())[:10], require_current=False)["issues"]
+    if invalid_rows:
+        issues.append("invalid_source_rows")
+    if issues:
+        df.attrs["ingest_issues"] = issues
+    if use_db and not issues:
         store.upsert_kline(market, code, "qfq", df, src=source)
     return df
 

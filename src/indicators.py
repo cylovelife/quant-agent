@@ -13,7 +13,7 @@ def ema(s: pd.Series, n: int) -> pd.Series:
 
 
 def rsi(close: pd.Series, n: int = 14) -> pd.Series:
-    """Wilder RSI。"""
+    """Wilder 平滑 RSI；纯上涨为100，平盘及无价格变动的首项为50。"""
     delta = close.diff()
     gain = delta.clip(lower=0.0)
     loss = (-delta).clip(lower=0.0)
@@ -21,6 +21,7 @@ def rsi(close: pd.Series, n: int = 14) -> pd.Series:
     avg_loss = loss.ewm(alpha=1 / n, adjust=False).mean()
     rs = avg_gain / avg_loss.replace(0, np.nan)
     out = 100 - 100 / (1 + rs)
+    out = out.mask((avg_loss == 0) & (avg_gain > 0), 100.0)
     return out.fillna(50.0)
 
 

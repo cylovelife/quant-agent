@@ -4,9 +4,9 @@
 对接 R&D-Agent(Q) 的「统一可复现评测」思想：因子好不好，不只看某一期
 截面的预测力，更要看这种预测力在时间序列上是否**稳定**。
 
-方法（与实盘回测口径对齐）：
+方法（固定持有期价格标签，不含止盈止损）：
 1. 对参与评估的标的历史 K 线逐日计算 6 因子分与综合 score；
-2. 前向收益 = 次日开盘买入、持有 horizon 日收盘卖出（与 backtest 一致）；
+2. 前向收益 = 次日开盘买入、第 horizon 根后续日线收盘卖出；
 3. 每个「市场 × 交易日」构成一个横截面，计算 因子 vs 前向收益 的
    Pearson IC 与 Spearman Rank IC；
 4. 得到 IC 时间序列 → 均值 / 标准差 / ICIR / 胜率 / t 值。
@@ -23,6 +23,7 @@ import pandas as pd
 
 from indicators import add_indicators
 from strategy import score_row
+from trade_semantics import LabelSpec, forward_labels
 
 FACTOR_COLS = ["f_boll", "f_rsi", "f_volume", "f_trend", "f_macd", "f_drawdown"]
 EVAL_COLS = ["score"] + FACTOR_COLS
@@ -32,10 +33,8 @@ MIN_OBS = 5      # 单个截面至少 5 只标的才计算 IC
 
 
 def forward_return(k: pd.DataFrame, horizon: int = 5) -> pd.Series:
-    """t 日信号 → t+1 开盘买入 → 持有 horizon 日收盘卖出（与 backtest 口径一致）。"""
-    entry = k["open"].shift(-1)
-    exit_ = k["close"].shift(-horizon)
-    return exit_ / entry - 1
+    """固定持有期价格收益；与策略回测共享入场时点，但不含止盈止损。"""
+    return forward_labels(k, LabelSpec(horizon))["ret"]
 
 
 def _corr(x: np.ndarray, y: np.ndarray) -> float:
@@ -46,10 +45,12 @@ def _corr(x: np.ndarray, y: np.ndarray) -> float:
     return float(np.dot(x, y) / denom) if denom > 1e-12 else float("nan")
 
 
-def build_panel(kline_map: dict, params: dict, horizon: int = 5) -> pd.DataFrame:
-    """把 K 线集合摊成「市场 × 日期 × 标的」的因子面板（含前向收益）。"""
+def build_panel(kline_map: dict, params: dict, horizon: int = 5,
+                label_spec: dict | None = None) -> pd.DataFrame:
+    """因子面板；默认固定持有期，显式label_spec才使用策略止盈止损。"""
     rows = []
     w = params["weights"]
+    spec = LabelSpec.from_dict(label_spec) if label_spec is not None else LabelSpec(horizon)
     for key, k in kline_map.items():
         if k is None or len(k) < WARMUP + horizon + 10:
             continue
@@ -58,16 +59,20 @@ def build_panel(kline_map: dict, params: dict, horizon: int = 5) -> pd.DataFrame
         if "date" not in kk.columns:
             continue
         kk["macd_hist_prev"] = kk["macd_hist"].shift(1)
-        kk["fwd_ret"] = forward_return(kk, horizon)
+        labels = forward_labels(kk, spec)
+        kk["fwd_ret"] = labels["ret"]
+        for col in ("entry_date", "label_end_date", "label_version", "label_id"):
+            kk[col] = labels[col]
         # 截取：预热期之后、且留有完整前向窗口
-        seg = kk.iloc[WARMUP: len(kk) - horizon]
+        seg = kk.iloc[WARMUP:]
         for d in seg.to_dict("records"):
             fwd = d.get("fwd_ret", np.nan)
             if not np.isfinite(fwd):
                 continue
             s = score_row(d, w)
             rec = {"market": market, "date": str(d.get("date"))[:10],
-                   "code": code, "fwd_ret": float(fwd)}
+                   "code": code, "fwd_ret": float(fwd),
+                   **{col: d[col] for col in ("entry_date", "label_end_date", "label_version", "label_id")}}
             rec.update(s)
             rows.append(rec)
     return pd.DataFrame(rows)

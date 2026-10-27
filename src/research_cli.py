@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 
 from daily_research import completed_date, research_daily, _atomic_json
+from data_quality import assess_bars, capture_provenance
 from data_snapshot import read_snapshot, sync_snapshot
 from local_data import LocalData, iso_date
 
@@ -105,26 +106,41 @@ def synchronize(universe: dict[str, list[str]], bars: int, budget_sec: float) ->
             else:
                 frame = fetcher.fetch_kline(code, market, limit=bars, use_db=False)
                 if frame is None or frame.empty:
-                    item["reason"] = "source_empty_or_unavailable"
+                    failure = frame.attrs.get("fetch_failure", {}) if frame is not None else {}
+                    item["reason"] = failure.get("kind", "source_empty_or_unavailable")
+                    if failure.get("reason"):
+                        item["detail"] = failure["reason"]
                 else:
-                    written = store.upsert_kline(
-                        market,
-                        code,
-                        "qfq",
-                        frame,
-                        src=frame.attrs.get("source", "tencent_ifzq_qfq"),
-                    )
-                    item["written"] = written
-                    if written == len(frame):
-                        item["status"] = "updated"
+                    # The adapter can return partial rows marked as rejected. Do not
+                    # lose that evidence by persisting the surviving rows as healthy.
+                    checked = assess_bars(frame, str(frame["date"].max())[:10], require_current=False)
+                    try:
+                        capture_provenance(frame, market, code, "qfq")
+                    except ValueError:
+                        checked["issues"].append("provenance_identity_mismatch")
+                    if checked["issues"]:
+                        item.update(reason="source_data_invalid", issues=checked["issues"])
                     else:
-                        item["reason"] = "storage_write_failed_or_partial"
+                        written = store.upsert_kline(
+                            market,
+                            code,
+                            "qfq",
+                            frame,
+                            src=frame.attrs.get("source", "tencent_ifzq_qfq"),
+                        )
+                        item["written"] = written
+                        if written == len(frame):
+                            item["status"] = "updated"
+                        else:
+                            item["reason"] = "storage_write_failed_or_partial"
             series.append(item)
             print(
                 f"  {market}:{code} {item['status']} rows={item['written']} "
                 f"{item.get('reason', '')}",
                 flush=True,
             )
+            if item.get("detail") or item.get("issues"):
+                print(f"    {item.get('detail') or ', '.join(item['issues'])}", flush=True)
     return {
         "series": series,
         "failed": sum(s["status"] == "failed" for s in series),

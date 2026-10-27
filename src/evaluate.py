@@ -2,9 +2,9 @@
 """迭代模块：评估昨日推荐的实际表现，在线更新评分权重。
 
 机制：
-1. 每次运行把当日推荐写入 state/picks_YYYYMMDD.json（含买入参考价=当日收盘）。
-2. 下次运行时，读取最近一份历史推荐，用最新快照/净值计算实际收益。
-3. 收益记录滚动追加到 state/outcomes.csv。
+1. 信号与规则冻结到 state/picks_v2_YYYY-MM-DD.json，参考价不作成交价。
+2. 使用信号后的日线开盘入场，只结算已成熟的收盘标签，不使用最新报价回填。
+3. 收益记录幂等保存到 state/outcomes_v2.csv，旧口径单独保留。
 4. 当最近 N 笔样本 >= 20 时，按"各因子得分与实际收益的滚动相关性"微调权重：
    w_i <- clip(w_i * (1 + lr * corr_i))，然后归一化，并保存版本历史。
 """
@@ -17,6 +17,9 @@ import math
 
 import numpy as np
 import pandas as pd
+
+from trade_semantics import LABEL_VERSION, SUPPORTED_MARKETS, LabelSpec, resolve_trade
+from data_quality import assess_bars, build_data_contract
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STATE = os.path.join(ROOT, "state")
@@ -34,63 +37,61 @@ def _read_outcomes(path: str) -> pd.DataFrame:
     """
     df = pd.read_csv(path, dtype={"code": str, "date": str, "market": str})
     if "date" in df.columns and "code" in df.columns:
-        df = df.drop_duplicates(subset=["date", "code"], keep="last").reset_index(drop=True)
+        keys = [c for c in ("date", "market", "code", "label_id") if c in df.columns]
+        df = df.drop_duplicates(subset=keys, keep="first").reset_index(drop=True)
     return df
 
 
-def _latest_picks_file(before: str | None = None):
-    files = sorted(glob.glob(os.path.join(STATE, "picks_*.json")))
-    if before:
-        files = [f for f in files
-                 if f.split("picks_")[-1][:10] < before]
-    return files[-1] if files else None
-
-
-def _latest_trade_date(kline_fn) -> str | None:
-    """用基准标的（沪深300ETF 510300）的最新 K 线日期，代表「行情已更新到哪一天」。
-
-    这是判断「明天的实际数据是否已经存在」的唯一可靠依据：
-    快照里的最新价在盘中/隔夜都可能仍是上一交易日的收盘价，光看它分不出真假。
-    """
+def evaluate_previous(fetch_quote_fn, today_str: str, kline_fn=None,
+                       calendar_by_market: dict | None = None,
+                       require_data_quality: bool = False) -> dict:
+    """结算全部历史v2信号的成熟标签；报价参数仅保留调用兼容，不参与收益计算。"""
     if kline_fn is None:
-        return None
-    try:
-        k = kline_fn("510300", "etf")
-        if k is None or len(k) == 0:
-            return None
-        return str(k["date"].iloc[-1])[:10]
-    except Exception:
-        return None
-
-
-def evaluate_previous(fetch_quote_fn, today_str: str, kline_fn=None) -> dict:
-    """评估最近一次历史推荐的次日表现。fetch_quote_fn(code, market)->最新价(或None)
-
-    新鲜度守卫：只有当行情已经推进到**推荐日之后**才允许复盘。
-    否则（例如推荐当天 23:00，或次日凌晨盘前）取到的最新价仍是推荐日自己的收盘价，
-    会算出一整批 ret=0 的退化样本进 outcomes.csv —— 这些零样本会把相关性和 t 值
-    稀释向 0，是「用假数据做迭代」的典型来源。
-    """
-    pf = _latest_picks_file(before=today_str)
-    if not pf:
-        return {"skipped": "没有历史推荐可评估"}
-    with open(pf, encoding="utf-8") as f:
-        rec = json.load(f)
-    picks_date = str(rec.get("date") or "")[:10]
-    last_td = _latest_trade_date(kline_fn)
-    if last_td and picks_date and last_td <= picks_date:
-        return {"skipped": f"行情尚未推进（最新交易日 {last_td} ≤ 推荐日 {picks_date}），"
-                           f"无可验证的新数据，跳过复盘"}
-    picks = rec.get("picks", [])
+        return {"skipped": "缺少日线，不能确定历史成交与标签终点"}
+    files = sorted(glob.glob(os.path.join(STATE, "picks_v2_*.json")))
+    oc = os.path.join(STATE, "outcomes_v2.csv")
+    old = _read_outcomes(oc) if os.path.exists(oc) else pd.DataFrame()
+    keys = ["date", "market", "code", "label_id"]
+    seen = {tuple(str(row.get(key)) for key in keys) for row in old.to_dict("records")}
     results = []
-    for p in picks:
-        px = fetch_quote_fn(p["code"], p["market"], p.get("mkt_id"))
-        if px is None or not p.get("entry_price"):
+    unavailable = pending = 0
+    for pf in files:
+        with open(pf, encoding="utf-8") as f:
+            rec = json.load(f)
+        if rec.get("label_version") != LABEL_VERSION or rec.get("date", "") >= today_str:
             continue
-        ret = px / p["entry_price"] - 1
-        results.append({**p, "exit_price": px, "ret": round(ret, 4)})
-    summary = {"picks_date": rec.get("date"), "count": len(results)}
+        spec = LabelSpec.from_dict(rec["label_spec"])
+        if rec.get("label_id") != spec.label_id:
+            unavailable += len(rec.get("picks", []))
+            continue
+        for p in rec.get("picks", []):
+            signal_date = p["signal_date"]
+            key = (signal_date, p["market"], str(p["code"]), spec.label_id)
+            if key in seen:
+                continue
+            if p["market"] not in SUPPORTED_MARKETS:
+                unavailable += 1
+                continue
+            k = kline_fn(p["code"], p["market"], p.get("mkt_id"))
+            if require_data_quality:
+                context = build_data_contract({(p["market"], str(p["code"]), "qfq"): k},
+                                              {p["market"]: [str(p["code"])]}, today_str)
+                usable = context["series"][f"{p['market']}:{p['code']}"]["data_usable"]
+                checked = assess_bars(k, today_str, sessions=(calendar_by_market or {}).get(p["market"]))
+                if not usable or not checked["new_signal_allowed"]:
+                    unavailable += 1
+                    continue
+            trade = resolve_trade(k, signal_date, spec, asof=today_str,
+                                  calendar=(calendar_by_market or {}).get(p["market"]))
+            if trade["status"] != "mature":
+                unavailable += int(trade["status"] == "unavailable")
+                pending += int(trade["status"] != "unavailable")
+                continue
+            results.append({**p, **trade, "date": signal_date})
+            seen.add(key)
+    summary = {"count": len(results), "pending": pending, "unavailable": unavailable}
     if results:
+        summary["picks_date"] = max(r["signal_date"] for r in results)
         rets = [r["ret"] for r in results]
         summary.update({
             "avg_ret": round(float(np.mean(rets)), 4),
@@ -99,20 +100,14 @@ def evaluate_previous(fetch_quote_fn, today_str: str, kline_fn=None) -> dict:
             "worst": min(results, key=lambda r: r["ret"]),
             "details": results,
         })
-        # 追加到滚动结果文件——按 picks_date 幂等重写：同一天重复运行不会重复记账。
-        # 盲目 append 会让同一批样本进两次，把名义 N 翻倍，进而把 t 值抬到「假显著」。
-        rows = [{"date": rec.get("date"), "code": str(r["code"]), "market": r["market"],
-                 "score": r.get("score"), **{k: r.get(k) for k in FACTORS},
-                 "ret": r["ret"]} for r in results]
-        oc = os.path.join(STATE, "outcomes.csv")
-        new = pd.DataFrame(rows)
-        if os.path.exists(oc):
-            old = _read_outcomes(oc)
-            old = old[old["date"].astype(str) != str(rec.get("date"))]
-            out = pd.concat([old, new], ignore_index=True) if not old.empty else new
-        else:
-            out = new
-        out.to_csv(oc, index=False, encoding="utf-8")
+        new = pd.DataFrame(results)
+        out = pd.concat([old, new], ignore_index=True) if not old.empty else new
+        os.makedirs(STATE, exist_ok=True)
+        out.to_csv(oc + ".tmp", index=False, encoding="utf-8")
+        os.replace(oc + ".tmp", oc)
+    else:
+        summary["skipped"] = (f"无新增成熟v2标签（待成熟 {pending} 条、行情缺失或未支持 {unavailable} 条；"
+                              "v2首期仅A股/ETF，旧口径隔离）")
     return summary
 
 
@@ -189,6 +184,20 @@ def _design_effect(df: pd.DataFrame) -> tuple[float, int, float]:
     return float(max(1.0, 1.0 + (m - 1.0) * icc)), k, icc
 
 
+def _recent_complete_dates(df: pd.DataFrame, target_rows: int) -> pd.DataFrame:
+    """Take the most recent whole trading dates, including the boundary date."""
+    if target_rows <= 0:
+        raise ValueError("target_rows must be positive")
+    counts = df.groupby(df["date"].astype(str)).size().sort_index(ascending=False)
+    chosen, total = [], 0
+    for day, count in counts.items():
+        chosen.append(day)
+        total += int(count)
+        if total >= target_rows:
+            break
+    return df[df["date"].astype(str).isin(chosen)].sort_values("date", kind="stable").copy()
+
+
 def update_weights(params: dict, min_samples: int = 20, lr: float = 0.25,
                    min_days: int = 20) -> dict:
     """贝叶斯式在线权重更新（借鉴 R&D-Agent(Q) 分析单元的探索-利用自适应思想）。
@@ -205,10 +214,14 @@ def update_weights(params: dict, min_samples: int = 20, lr: float = 0.25,
       ② **退化日剔除**：整天 ret 恒为 0 的交易日是缺失而非观测。
       ③ **DEFF 修正**：t 值用有效样本量 n/DEFF，而不是名义笔数。
     """
-    oc = os.path.join(STATE, "outcomes.csv")
+    oc = os.path.join(STATE, "outcomes_v2.csv")
     if not os.path.exists(oc):
         return {"updated": False, "reason": "样本不足"}
     df = _read_outcomes(oc)
+    spec = LabelSpec.from_params(params)
+    if not {"label_version", "label_id"}.issubset(df.columns):
+        return {"updated": False, "reason": "收益标签缺少版本，不能混用旧口径"}
+    df = df[(df["label_version"] == LABEL_VERSION) & (df["label_id"] == spec.label_id)]
     df = df.dropna(subset=["ret"])
     if df.empty:
         return {"updated": False, "reason": "样本不足"}
@@ -226,7 +239,7 @@ def update_weights(params: dict, min_samples: int = 20, lr: float = 0.25,
     if last_used and max_date <= str(last_used):
         return {"updated": False, "data_through": max_date, **diag, **qinfo,
                 "reason": f"无新样本（最新 {max_date} 已用于上次迭代），维持现权重"}
-    df = full.tail(200)
+    df = _recent_complete_dates(full, 200)
     if len(df) < min_samples:
         return {"updated": False, "data_through": max_date, **diag, **qinfo,
                 "reason": f"样本不足({len(df)}/{min_samples})"}
@@ -287,7 +300,9 @@ def update_weights(params: dict, min_samples: int = 20, lr: float = 0.25,
             **qinfo}
 
 
-def save_today_picks(picks: list, market_summary: dict, data_date: str | None = None) -> str:
+def save_today_picks(picks: list, market_summary: dict, data_date: str | None = None,
+                     params: dict | None = None, allow_new: bool = True,
+                     data_context: dict | None = None) -> str | None:
     """落盘当日推荐。
 
     `data_date` 是**行情数据对应的交易日**，不是墙钟日期。盘前或非交易日运行时
@@ -295,9 +310,35 @@ def save_today_picks(picks: list, market_summary: dict, data_date: str | None = 
     昨天」的推荐——次日复盘时把两天的涨跌当成一天记，收益被系统性放大。
     """
     today = data_date or date.today().isoformat()
-    path = os.path.join(STATE, f"picks_{today}.json")
-    with open(path, "w", encoding="utf-8") as f:
+    if params is None:
+        raise ValueError("params required to freeze the return label policy")
+    spec = LabelSpec.from_params(params)
+    path = os.path.join(STATE, f"picks_v2_{today}.json")
+    if os.path.exists(path):
+        return path
+    if not allow_new:
+        return None
+    if data_context is not None:
+        picks = [pick for pick in picks if data_context.get("series", {}).get(
+            f"{pick['market']}:{pick['code']}", {}).get("new_signal_allowed", False)]
+        if not picks:
+            return None
+    frozen = []
+    for pick in picks:
+        signal_date = pick.get("signal_date", today)
+        frozen.append({**pick, "signal_date": signal_date,
+                       "signal_time": signal_date + "@close",
+                       "reference_price": pick.get("reference_price", pick.get("entry_price", pick.get("price"))),
+                       "entry_price": None, "entry_date": None,
+                       "label_version": LABEL_VERSION, "label_id": spec.label_id,
+                       "label_spec": spec.to_dict()})
+    os.makedirs(STATE, exist_ok=True)
+    with open(path + ".tmp", "w", encoding="utf-8") as f:
         json.dump({"date": today, "ts": datetime.now().isoformat(),
-                   "market_summary": market_summary, "picks": picks},
+                   "label_version": LABEL_VERSION, "label_id": spec.label_id,
+                   "label_spec": spec.to_dict(),
+                   "data_contract": data_context,
+                   "market_summary": market_summary, "picks": frozen},
                   f, ensure_ascii=False, indent=2)
+    os.replace(path + ".tmp", path)
     return path

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """向量化/事件驱动混合回测器：检验"低吸信号"的历史胜率。
 
-规则（与实盘低吸一致）：
+研究模拟规则（尚未纳入成本及真实成交约束）：
 - 信号日收盘触发评分 >= 阈值
 - 次日开盘价买入（承认无法精确抄到收盘价）
 - 持有 hold_days 日后收盘卖出；期间若收盘跌破止损线或达到止盈线则提前离场
@@ -10,15 +10,24 @@ import numpy as np
 import pandas as pd
 
 from indicators import add_indicators
+from trade_semantics import LabelSpec, resolve_trade
+from execution import AccountView, ExecutionPolicy, Instrument, Order, SessionFacts, match_order
+from execution_data import opening_quote
+
+
+def replay_paper_order(order: Order, instrument: Instrument, raw: pd.DataFrame,
+                       session: SessionFacts, account: AccountView,
+                       policy: ExecutionPolicy) -> dict:
+    """Preview one explicit historical order; no qfq conversion or portfolio accounting."""
+    quote = opening_quote(raw, instrument, order.execution_date, session)
+    return match_order(order, instrument, quote, account, policy)
 
 
 def backtest_symbol(k: pd.DataFrame, params: dict) -> dict:
     """对单只标的的历史K线回测低吸策略，返回统计指标。"""
     bt = params["backtest"]
     w = params["weights"]
-    hold_days = bt.get("hold_days", 5)
-    stop = bt.get("stop_loss", -0.05)
-    take = bt.get("take_profit", 0.08)
+    spec = LabelSpec.from_dict(bt)
     thr = params["score_threshold"]
 
     k = add_indicators(k, params)
@@ -32,26 +41,12 @@ def backtest_symbol(k: pd.DataFrame, params: dict) -> dict:
         row = k.iloc[i]
         s = score_row_fast(row, prev_hist.iloc[i], w)
         if s >= thr:
-            entry = k.iloc[i + 1]["open"]
-            exit_price, exit_i, reason = None, None, None
-            for j in range(i + 1, min(i + 1 + hold_days, n)):
-                c = k.iloc[j]["close"]
-                ret = c / entry - 1
-                if ret <= stop:
-                    exit_price, exit_i, reason = c, j, "止损"
-                    break
-                if ret >= take:
-                    exit_price, exit_i, reason = c, j, "止盈"
-                    break
-            if exit_price is None:
-                j = min(i + hold_days, n - 1)
-                exit_price, exit_i, reason = k.iloc[j]["close"], j, "持有到期"
-            trades.append({
-                "entry_date": k.iloc[i + 1]["date"],
-                "ret": exit_price / entry - 1,
-                "days": exit_i - i,
-                "reason": reason,
-            })
+            trade = resolve_trade(k, str(k.iloc[i]["date"])[:10], spec)
+            if trade["status"] != "mature":
+                i += 1
+                continue
+            trades.append({**trade, "days": trade["days_held"]})
+            exit_i = i + trade["days_held"]
             i = exit_i + 1  # 一笔交易结束后才寻找下一个信号
         else:
             i += 1
@@ -60,7 +55,8 @@ def backtest_symbol(k: pd.DataFrame, params: dict) -> dict:
         return {"signals": 0}
     rets = np.array([t["ret"] for t in trades])
     wins = rets > 0
-    equity = np.cumprod(1 + rets)
+    # 加入初始净值，首笔亏损也必须计入回撤；仍仅观察已平仓交易端点，非每日净值。
+    equity = np.concatenate(([1.0], np.cumprod(1 + rets)))
     peak = np.maximum.accumulate(equity)
     mean = float(rets.mean())
     sd = float(rets.std())

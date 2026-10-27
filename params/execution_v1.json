@@ -1,0 +1,33 @@
+{
+  "version": "paper_open_v1",
+  "effective_from": "2026-07-06",
+  "verified_on": "2026-10-26",
+  "sources": {
+    "sse_rules": "https://www.sse.com.cn/lawandrules/sselawsrules2025/fund/trading/c/c_20260424_10817739.shtml",
+    "szse_rules": "https://docs.static.szse.cn/www/lawrules/rule/trade/current/W020260424690713155663.pdf",
+    "stock_fees": "https://one.sse.com.cn/onething/gptz/",
+    "stamp_duty_reduction": "https://m.mof.gov.cn/czxw/202308/t20230827_3904226.htm",
+    "stamp_duty_law": "https://fgk.chinatax.gov.cn/zcfgk/c100009/c5193058/content.html",
+    "etf_basics": "https://investor.szse.cn/warning/activities/fundIntroduction/t20210104_584079.html"
+  },
+  "assumptions": {
+    "commission": "Experiment assumptions, not the user's broker tariff; includes exchange/regulatory fees; transfer fee is separate.",
+    "slippage": "5 bps adverse to raw opening price, rounded against the order to the instrument tick.",
+    "liquidity": "Explicit opening capacity with observed/assumed origin is required. Daily total volume is never opening liquidity.",
+    "fills": "Full quantity or no fill, one supplied target opening session only; no rollover, intraday fills or queue simulation.",
+    "rounding": "Notional and each fee component independently round half-up to CNY 0.01.",
+    "classification": "Caller supplies verified instrument class and dated session facts; no automatic ST/IPO/ETF classification."
+  },
+  "profiles": {
+    "cn_mainboard": {
+      "market": "cn", "buy_lot": 100, "tick": "0.01", "max_quantity": 1000000,
+      "settlement_days": 1, "commission_rate": "0.0003", "commission_min": "5.00",
+      "stamp_sell_rate": "0.0005", "transfer_rate": "0.00001", "slippage_bps": "5"
+    },
+    "cn_equity_etf": {
+      "market": "etf", "buy_lot": 100, "tick": "0.001", "max_quantity": 1000000,
+      "settlement_days": 1, "commission_rate": "0.0001", "commission_min": "0.00",
+      "stamp_sell_rate": "0", "transfer_rate": "0", "slippage_bps": "5"
+    }
+  }
+}

@@ -71,16 +71,18 @@ check("高 ROE 低估值 > 银行同口径", s_mfg["score"] > s_fin["score"],
 rng = np.random.default_rng(7)
 rows = []
 for d in range(24):
-    for i in range(10):
+    for i in range(20):
         f = {k: float(rng.random() * 100) for k in
              ["v_quality", "v_growth", "v_cashflow", "v_balance", "v_valuation"]}
-        rows.append({"date": f"2025-01-{d + 1:02d}", "code": f"{i:06d}", **f,
+        date = pd.Timestamp("2025-01-01") + pd.Timedelta(days=d * 5)
+        rows.append({"date": str(date.date()), "code": f"{i:06d}", **f,
+                     **{f"label_end_ret_{n}": str((date + pd.Timedelta(days=1)).date()) for n in (20, 60, 120)},
                      "score": float(np.mean(list(f.values()))),
                      "ret_20": float(rng.normal(0, 0.05)),
                      "ret_60": float(rng.normal(0, 0.1)),
                      "ret_120": float(rng.normal(0, 0.15))})
 panel = pd.DataFrame(rows)
-sel = msel.select_long(panel, {})
+sel = msel.select_long(panel, {"temporal_validation": {"validation_start": "2025-03-12", "test_start": "2025-04-06", "test_end": "2025-04-27"}})
 check("select_long 产出结论（列名映射正确）", sel is not None)
 if sel:
     check("候选方案覆盖全部权重方案", len(sel["candidates"]) == len(msel.LONG_SCHEMES),

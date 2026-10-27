@@ -28,6 +28,21 @@ import time
 import traceback
 from datetime import datetime
 
+if __name__ == "__main__" and any(arg.split("=", 1)[0] == "--research-experiment" for arg in sys.argv[1:]):
+    parser = argparse.ArgumentParser(description="本地研究实验登记")
+    parser.add_argument("--research-experiment", metavar="REQUEST_JSON", required=True)
+    parsed = parser.parse_args()
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
+    from research_experiment_cli import main as experiment_main
+    raise SystemExit(experiment_main(parsed.research_experiment))
+
+if __name__ == "__main__" and any(
+        arg.split("=", 1)[0] in {"--start-paper-experiment", "--transition-paper-experiment", "--advance-paper-experiment", "--compare-paper-experiment", "--settle-paper-days", "--paper-curve", "--init-account", "--simulate-order", "--record-order", "--ledger-status", "--record-action", "--migrate-ledger-copy"} for arg in sys.argv[1:]):
+    # Exit before the normal pipeline's imports, log creation and runtime configuration.
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
+    from execution_cli import main as execution_main
+    raise SystemExit(execution_main())
+
 socket.setdefaulttimeout(20)  # 全局兜底，防止任何请求无限挂起
 
 import pandas as pd
@@ -58,6 +73,9 @@ from exit_model import exit_advice, fit_exit_model, parameter_scan  # noqa: E402
 from factor_eval import rolling_factor_ic  # noqa: E402
 from indicators import factor_collinearity  # noqa: E402
 from strategy import prefilter, score_candidates  # noqa: E402
+from daily_research import completed_date  # noqa: E402
+from data_quality import completed_bars, freeze_data_contract  # noqa: E402
+from trade_semantics import LABEL_VERSION, SUPPORTED_MARKETS, LabelSpec  # noqa: E402
 
 LOG = os.path.join(ROOT, "logs")
 
@@ -372,7 +390,7 @@ def print_db_stats():
               f"仓位 {pos:<9}  {r.get('style_bias') or ''}")
 
 
-def _load_replay_panel():
+def _load_replay_panel(temporal_end=None):
     """读取长期回放缓存里的面板（缺失或损坏返回 None）。
 
     复用 `_long_replay_and_select` 写下的同一份缓存，避免为验证再跑一次回放。
@@ -382,7 +400,10 @@ def _load_replay_panel():
         return None
     try:
         with open(path, encoding="utf-8") as f:
-            return pd.DataFrame((json.load(f) or {}).get("panel") or [])
+            cached = json.load(f) or {}
+            if cached.get("temporal_test_end") != temporal_end:
+                return None
+            return pd.DataFrame(cached.get("panel") or [])
     except Exception:
         return None
 
@@ -403,10 +424,15 @@ def run_ml_eval(cfg: dict, params: dict, no_replay: bool = False) -> int:
     已成立的结论失效、收益无法归因。这里只回答一个问题：ML 值不值得单开一次
     接入验证（三关门禁全过才值得）。
     """
-    log("走前 ML 验证（长期六维 → 未来收益，expanding window）")
+    log("ML 验证（实际标签结束日清除 + 固定测试）")
     mc = (cfg.get("ml") or {})
+    from temporal_validation import configured_boundaries
+    boundaries = configured_boundaries(cfg)
+    if boundaries is None:
+        log("  缺少已结束的固定日期边界，无法评估")
+        return 1
     today = datetime.now().strftime("%Y-%m-%d")
-    panel = _load_replay_panel()
+    panel = _load_replay_panel(boundaries["test_end"])
     if (panel is None or panel.empty) and not no_replay:
         log("  回放面板缺失，先跑一次长期历史回放…")
         raw_cache = {}
@@ -424,7 +450,7 @@ def run_ml_eval(cfg: dict, params: dict, no_replay: bool = False) -> int:
             _long_replay_and_select(cfg, params, _raw, False, today, log)
         except Exception as e:
             log(f"  历史回放失败: {e}")
-        panel = _load_replay_panel()
+        panel = _load_replay_panel(boundaries["test_end"])
     if panel is None or panel.empty:
         log("  拿不到回放面板，无法评估（先跑 python run.py --mode long）")
         return 1
@@ -440,6 +466,7 @@ def run_ml_eval(cfg: dict, params: dict, no_replay: bool = False) -> int:
         purge=bool(mc.get("purge", True)),
         embargo_periods=mc.get("embargo_periods"),
         p_threshold=float(mc.get("p_threshold", 0.10)),
+        boundaries=cfg.get("temporal_validation"),
         seed=int(mc.get("seed", 0)))
     if not res.get("rule"):
         log(f"  {res.get('verdict')}")
@@ -706,6 +733,22 @@ def main():
 
     ap = argparse.ArgumentParser()
     research_cli.add_arguments(ap)
+    ap.add_argument("--research-experiment", metavar="REQUEST_JSON", help="显式登记或检查本地研究实验")
+    ap.add_argument("--start-paper-experiment", metavar="REQUEST_JSON", help="显式登记前瞻虚拟试验及现金基准")
+    ap.add_argument("--transition-paper-experiment", metavar="REQUEST_JSON", help="在全新账本副本登记运行版本衔接，不重置账户")
+    ap.add_argument("--advance-paper-experiment", metavar="REQUEST_JSON", help="按冻结规则同步推进试验与基准")
+    ap.add_argument("--compare-paper-experiment", metavar="REQUEST_JSON", help="只读试验与基准的资金对照")
+    ap.add_argument("--settle-paper-days", metavar="REQUEST_JSON", help="按日原子结算虚拟账户")
+    ap.add_argument("--paper-curve", metavar="REQUEST_JSON", help="只读虚拟账户每日资金曲线")
+    ap.add_argument("--init-account", metavar="REQUEST_JSON", help="显式初始化独立虚拟账户")
+    ap.add_argument("--simulate-order", metavar="REQUEST_JSON",
+                    help="只读本地raw行情，预演单笔虚拟订单，不写账本或启动账户")
+    ap.add_argument("--record-order", metavar="REQUEST_JSON",
+                    help="将显式虚拟订单原子写入指定的既有现金账本，不初始化账户")
+    ap.add_argument("--ledger-status", metavar="REQUEST_JSON",
+                    help="只读指定虚拟账户的现金、数量、费用和对账事件")
+    ap.add_argument("--record-action", metavar="REQUEST_JSON", help="记账已声明的公司行动或虚拟资金流")
+    ap.add_argument("--migrate-ledger-copy", metavar="REQUEST_JSON", help="将v1账本复制升级到全新v2文件")
     ap.add_argument("--quick", action="store_true")
     ap.add_argument("--no-eval", action="store_true")
     ap.add_argument("--no-replay", action="store_true",
@@ -734,6 +777,22 @@ def main():
     ap.add_argument("--full", action="store_true",
                     help="输出完整版报告，覆盖 config.json 的 report.brief")
     args = ap.parse_args()
+
+    if args.simulate_order or args.record_order or args.ledger_status or args.record_action or args.migrate_ledger_copy:
+        if any((args.daily, args.sync_data, args.data_query, args.verify_snapshot,
+                args.sync_snapshot, args.offline, args.db_stats, args.csc_probe,
+                args.ml_eval, args.fund_flow, args.new_sources, args.spot_probe,
+                args.akshare_probe)) or sum(bool(value) for value in
+                   (args.simulate_order, args.record_order, args.ledger_status, args.record_action, args.migrate_ledger_copy)) != 1:
+            ap.error("paper order command cannot be combined with another operation")
+        from execution_cli import run_preview, run_record, run_status, run_action, run_migrate_copy
+        if args.record_action:
+            return run_action(args.record_action)
+        if args.migrate_ledger_copy:
+            return run_migrate_copy(args.migrate_ledger_copy)
+        if args.ledger_status:
+            return run_status(args.ledger_status)
+        return run_preview(args.simulate_order) if args.simulate_order else run_record(args.record_order)
 
     # The research path validates configuration and returns its real exit code.
     # Existing dual-track dispatch below retains its configuration fallback.
@@ -788,6 +847,8 @@ def main():
     # 单只标的要依次试 3 个源 + 重试 3 次，最坏 ≈153s，12 只就是半小时的静默等待。
     FETCH_BUDGET_SEC = float(cfg.get("fetch_budget_sec", 180))
     _fetch_budget = {}
+    completed_asof = completed_date()
+    fetched_dates = {}
 
     def cached_kline(code, market, mkt_id=None):
         key = (market, str(code))
@@ -802,6 +863,10 @@ def main():
                 k = kline_fn(code, market, mkt_id)
             except Exception:
                 k = None
+            if k is not None and len(k):
+                fetched_dates[key] = str(k["date"].iloc[-1])[:10]
+            if k is not None and market in SUPPORTED_MARKETS:
+                k = completed_bars(k, completed_asof)
             bg.charge(time.time() - _t)
             kline_cache[key] = k
         return kline_cache[key]
@@ -837,9 +902,10 @@ def main():
         样本又会流进权重迭代。统一用「行情走到哪一天」作为账期。
         """
         try:
-            k = cached_kline("510300", "etf")
-            if k is not None and len(k):
-                return str(k["date"].iloc[-1])[:10]
+            cached_kline("510300", "etf")
+            fetched = fetched_dates.get(("etf", "510300"))
+            if fetched:
+                return fetched
         except Exception:
             pass
         return datetime.now().strftime("%Y-%m-%d")
@@ -861,16 +927,22 @@ def main():
     else:
         log("  中信建投数据源: 未启用（缺 CSC_API_KEY 或 QUANT_CSC=off）")
     today = data_date()
+    signal_day = min(today, completed_asof)
+    if signal_day != today:
+        log(f"  v2日线信号与结算截止 {signal_day}；其他当日采集仍按 {today} 留档")
     if today != datetime.now().strftime("%Y-%m-%d"):
         log(f"  账期采用最新交易日 {today}"
             f"（墙钟 {datetime.now():%Y-%m-%d} 尚未产生新行情）")
 
-    # 1) 迭代：评估昨日推荐 + 更新权重
+    # 1) 迭代：结算历史信号的新增成熟标签 + 更新权重
     ev, iter_info = {}, {"updated": False, "reason": "跳过"}
     if run_short and not args.no_eval:
         try:
-            log("评估昨日推荐…")
-            ev = evaluate_previous(quote_fn, today, kline_fn=cached_kline)
+            log("结算历史信号的成熟收益标签…")
+            reference_dates = portfolio.trading_calendar(kline_cache).get("etf", [])
+            review_calendars = {market: reference_dates for market in SUPPORTED_MARKETS}
+            ev = evaluate_previous(quote_fn, signal_day, kline_fn=cached_kline,
+                                   calendar_by_market=review_calendars, require_data_quality=True)
             if ev.get("skipped"):
                 log(f"  复盘跳过: {ev['skipped']}")
             else:
@@ -919,7 +991,7 @@ def main():
             traceback.print_exc()
         try:
             log("采集事件类数据（龙虎榜 / 两融 / 解禁 / 退市清单）…")
-            ev = ake.collect_all(
+            event_result = ake.collect_all(
                 today,
                 lhb_lookback_days=int(_ds.get("akshare_lhb_lookback_days", 3) or 0),
                 restriction_back_days=int(
@@ -929,7 +1001,7 @@ def main():
                 margin_backfill_days=int(
                     _ds.get("akshare_margin_backfill_days", 3) or 0),
                 log=log)
-            if not ev.get("ok"):
+            if not event_result.get("ok"):
                 log("  事件类数据本次全部未入库，已记入 data_health")
         except Exception as e:
             log(f"  事件类数据采集失败(不影响主流程): {e}")
@@ -940,6 +1012,8 @@ def main():
 
     # 2) 短线轨：抓取各市场快照 + 粗筛 + K线评分
     today_picks, summary = {}, {}
+    observed_universe = {}
+    universe_observation = {"kind": "observed_candidate_pool", "markets": {}}
     for mkt in (markets if run_short else []):
         try:
             log(f"处理市场: {mkt}")
@@ -952,6 +1026,13 @@ def main():
             if spot.empty:
                 log(f"  {mkt} 快照为空，跳过")
                 continue
+            if mkt in SUPPORTED_MARKETS:
+                observed_universe[mkt] = spot["code"].astype(str).tolist()
+                universe_observation["markets"][mkt] = {
+                    "source": spot.attrs.get("source"),
+                    "observed_at": datetime.now().astimezone().isoformat(),
+                    "upstream_fetched_at": None, "published_at": None,
+                    "cache_possible": True}
             summary[mkt] = market_summary(spot, mkt)
             if mkt == "cn":
                 summary[mkt]["note"] = "跌幅榜Top400样本"
@@ -999,9 +1080,51 @@ def main():
                 if f in r and pd.notna(r[f]):
                     pick[f] = float(r[f])
             all_picks.append(pick)
+    data_context, existing_book = None, None
     if run_short:
-        save_today_picks(all_picks, summary, data_date=today)
-        log(f"已保存今日推荐 {len(all_picks)} 条到 state/（账期 {today}）")
+        try:
+            # Include existing holdings even after they leave today's observed candidate pool.
+            if cfg.get("exit_model", {}).get("enabled", True):
+                existing_book = portfolio.load_book()
+                held = existing_book.get("positions", [])
+                if not held:
+                    prior = portfolio.latest_picks_file(before=signal_day)
+                    if prior:
+                        with open(prior, encoding="utf-8") as stream:
+                            archive = json.load(stream)
+                        if archive.get("label_version") == LABEL_VERSION:
+                            held = archive.get("picks", [])
+                for position in held:
+                    if position.get("market") in SUPPORTED_MARKETS and position.get("status", "pending") in ("pending", "open"):
+                        cached_kline(position["code"], position["market"], position.get("mkt_id"))
+            frames = {(market, code, "qfq"): bars for (market, code), bars in kline_cache.items()
+                      if market in SUPPORTED_MARKETS}
+            data_context = freeze_data_contract(
+                frames, observed_universe, signal_day, os.path.join(ROOT, "state", "data_contract"),
+                max_age_days=int(cfg.get("local_research", {}).get("max_age_days", 7)),
+                reference_key=("etf", "510300", "qfq"),
+                universe_observation=universe_observation, freshness_asof=completed_asof)
+            admitted = sum(check["new_signal_allowed"] for check in data_context["series"].values())
+            log(f"  数据版本 {data_context['snapshot_id'][:12]}：{admitted} 只具备新信号数据条件；完整历史时点覆盖未知")
+        except Exception as exc:
+            data_context = {"series": {}, "error": str(exc), "asof": signal_day}
+            log(f"  数据冻结失败，暂停新增信号及持仓价格结算: {exc}")
+            traceback.print_exc()
+        for market in SUPPORTED_MARKETS:
+            candidates = today_picks.get(market)
+            if candidates is not None and not candidates.empty:
+                allowed = candidates["code"].astype(str).map(
+                    lambda code: data_context["series"].get(f"{market}:{code}", {}).get("new_signal_allowed", False))
+                today_picks[market] = candidates.loc[allowed].copy()
+        picks_path = save_today_picks(all_picks, summary, data_date=signal_day, params=params,
+                                      allow_new=signal_day == today == completed_asof, data_context=data_context)
+        if picks_path:
+            with open(picks_path, encoding="utf-8") as f:
+                all_picks = json.load(f)["picks"]
+            log(f"已冻结当日首轮信号 {len(all_picks)} 条（信号日 {signal_day}，次日开盘尚待日线确认）")
+        else:
+            all_picks = []
+            log("未新增冻结信号：无通过数据准入的候选，或尚未到本信号日收盘确认时间")
 
     # 3.45) K 线内容签名：供后面三段重计算阶段做缓存寻址。
     # 签名来自 K 线内容本身（而非墙钟日期），所以当天数据被修订时会自动换 key。
@@ -1043,41 +1166,40 @@ def main():
     book, advice, exit_info, scan = None, [], None, None
     if run_short and exit_cfg.get("enabled", True):
         try:
-            book = portfolio.load_book()
+            book = existing_book if existing_book is not None else portfolio.load_book()
             cal = portfolio.trading_calendar(kline_cache)
             max_new = int(exit_cfg.get("max_new_positions_per_market", 5))
 
             # 首次运行：从最近一份历史推荐回填，让账本与离场模型立刻可用
             if not book.get("positions"):
-                pf = portfolio.latest_picks_file(before=today)
+                pf = portfolio.latest_picks_file(before=signal_day)
                 if pf:
-                    st = portfolio.backfill_from_picks(book, pf, cached_kline, params, today, cal,
-                                                       max_per_market=max_new)
+                    st = portfolio.backfill_from_picks(book, pf, cached_kline, params, signal_day, cal,
+                                                       max_per_market=max_new, data_context=data_context)
                     log(f"  账本首次回填 {os.path.basename(pf)}: 开仓 {st['opened']}、"
                         f"已平 {st['closed']}、跳过 {st['skipped']}")
 
-            # 结算：批量行情刷新最新价（腾讯批量接口，数十只一次请求）
-            held = portfolio.open_positions(book)
-            quotes = fetcher.fetch_quotes_batch(
-                [(p["code"], p["market"], p.get("mkt_id")) for p in held]) if held else {}
-            closed = portfolio.settle_book(book, quotes, cal, params, today)
+            # 结算：逐根回放完整日线，漏跑时也不能拿最新报价冒充历史离场价。
+            for p in book.get("positions", []):
+                if p.get("status") in ("open", "pending") and p.get("label_version") == LABEL_VERSION:
+                    cached_kline(p["code"], p["market"], p.get("mkt_id"))
+            cal = portfolio.trading_calendar(kline_cache)
+            legacy = [p for p in portfolio.open_positions(book) if p.get("label_version") != LABEL_VERSION]
+            legacy_quotes = fetcher.fetch_quotes_batch(
+                [(p["code"], p["market"], p.get("mkt_id")) for p in legacy]) if legacy else {}
+            closed = portfolio.settle_book(book, legacy_quotes, cal, params, signal_day,
+                                           kline_fn=cached_kline, data_context=data_context)
             log(f"  持仓结算: 未平仓 {len(portfolio.open_positions(book))} 只, "
-                f"本次平仓 {len(closed)} 只, 行情命中 {len(quotes)}/{len(held)}")
+                f"本次平仓 {len(closed)} 只")
 
             # 建仓：今日推荐按评分降序登记（同标的已持有则跳过）
             picks_by_market = {}
-            for mkt, df in today_picks.items():
-                if df is None or df.empty:
+            for pick in all_picks:
+                if not data_context.get("series", {}).get(f"{pick['market']}:{pick['code']}", {}).get("data_usable"):
                     continue
-                picks_by_market[mkt] = [
-                    {"code": str(r["code"]), "name": r["name"], "score": float(r["score"]),
-                     "entry_price": float(r["price"]), "mkt_id": r.get("mkt_id"),
-                     **{f: (float(r[f]) if f in r.index and pd.notna(r[f]) else None)
-                        for f in ("f_boll", "f_rsi", "f_volume", "f_trend",
-                                  "f_macd", "f_drawdown")}}
-                    for _, r in df.iterrows()]
-            added = portfolio.add_positions(book, picks_by_market, params, today, max_new)
-            log(f"  新建仓 {len(added)} 只（每市场上限 {max_new}）")
+                picks_by_market.setdefault(pick["market"], []).append(pick)
+            added = portfolio.add_positions(book, picks_by_market, params, signal_day, max_new)
+            log(f"  新登记待入场信号 {len(added)} 只（每市场上限 {max_new}；v2首期仅A股/ETF）")
 
             # 离场模型：用历史面板标定状态表 + 样本外验证（≈155s，输入未变则命中缓存）
             _mbn = int(exit_cfg.get("min_bucket_n", 20))
@@ -1086,9 +1208,11 @@ def main():
             exit_info = cached_phase(
                 "exit_model",
                 lambda: fit_exit_model(kline_cache, params, min_bucket_n=_mbn,
-                                       oos_frac=_oof, shrink_k=_shk),
+                                       oos_frac=_oof, shrink_k=_shk,
+                                       boundaries=cfg.get("temporal_validation")),
                 kline_sig, params,
-                {"min_bucket_n": _mbn, "oos_frac": _oof, "shrink_k": _shk},
+                {"min_bucket_n": _mbn, "oos_frac": _oof, "shrink_k": _shk,
+                 "temporal_validation": cfg.get("temporal_validation")},
                 no_cache=args.no_cache)
             if exit_info:
                 v = exit_info.get("validation")
@@ -1097,9 +1221,14 @@ def main():
                     + (f", OOS 均收益 {v['oos']['model']['avg_ret'] * 100:+.3f}% vs "
                        f"基线 {v['oos']['baseline']['avg_ret'] * 100:+.3f}%" if v else ""))
             else:
-                log("  离场模型: 样本不足，跳过")
+                log("  离场模型: 缺少固定日期边界或样本不足，跳过")
 
-            advice = exit_advice(portfolio.open_positions(book), exit_info, params)
+            verified = [p for p in portfolio.open_positions(book)
+                        if p.get("label_version") == LABEL_VERSION and p.get("verification_status") == "verified"]
+            current_label = LabelSpec.from_params(params).label_id
+            advice = [item for p in verified for item in exit_advice(
+                [p], exit_info if p["label_id"] == current_label else None,
+                {**params, "backtest": p["label_spec"]})]
             sells = [a for a in advice if a["advice"] == "SELL"]
             watches = [a for a in advice if a["advice"] == "WATCH"]
             log(f"  卖出建议: 卖出 {len(sells)} / 观察 {len(watches)} / 持仓 {len(advice)}")
@@ -1119,16 +1248,17 @@ def main():
             log(f"  离场模型失败(不影响主流程): {e}")
             traceback.print_exc()
 
-    # 3.8) 短线模型选型：离场规则组合的 walk-forward（样本外是否支持切换）
+    # 3.8) 短线模型选型：固定日期训练、验证及测试（研究观察）
     short_sel = None
     if run_short and kline_cache and (cfg.get("model_select", {}) or {}).get("enabled", True):
         try:
-            log("短线模型选型（离场规则组合 walk-forward）…")
+            log("短线模型选型（日期分组与固定测试）…")
             short_sel = cached_phase(
                 "select_short",
                 lambda: msel.select_short(cfg, params, kline_cache),
                 kline_sig, params,
-                {"grid": (cfg.get("model_select") or {}).get("shorts")},
+                {"grid": (cfg.get("model_select") or {}).get("shorts"),
+                 "temporal_validation": cfg.get("temporal_validation")},
                 no_cache=args.no_cache)
             if short_sel:
                 r = short_sel.get("recommend") or {}
@@ -1141,7 +1271,7 @@ def main():
                     f"/ 止盈 {r.get('take_profit')}")
                 log(f"  结论: {short_sel['verdict']}")
             else:
-                log("  样本不足，跳过")
+                log("  缺少固定日期边界或样本不足，跳过")
         except Exception as e:
             log(f"  短线选型失败: {e}")
             traceback.print_exc()
@@ -1181,6 +1311,8 @@ def main():
         if _st["tripped"] or _st["missing"]:
             log(f"  数据完整性 {_mkt}: 抓取 {_st['spent']}s/{_st['budget']}s"
                 f"{'（已超预算）' if _st['tripped'] else ''}，未取到 {_st['missing']} 只")
+    if data_context is not None:
+        data_health["_data_contract"] = data_context
 
     # 降级取数留痕：财务/行情改用备用源或库内旧数据的记录。
     # 和上面一样，必须进报告——降级后的口径与主源不同（例如财务公告日退化为
@@ -1472,6 +1604,9 @@ def _long_replay_and_select(cfg, params, cached_raw, no_replay, today, log):
     lt_cfg = cfg.get("longterm", {}) or {}
     ttl_days = float(lt_cfg.get("replay_ttl_days", 3))
     cache_path = os.path.join(ROOT, "state", "longterm_replay.json")
+    from temporal_validation import configured_boundaries
+    boundaries = configured_boundaries(cfg)
+    temporal_end = boundaries["test_end"] if boundaries else None
     rep, panel = None, None
     if not no_replay and os.path.exists(cache_path):
         age = (time.time() - os.path.getmtime(cache_path)) / 86400
@@ -1479,6 +1614,8 @@ def _long_replay_and_select(cfg, params, cached_raw, no_replay, today, log):
             try:
                 with open(cache_path, encoding="utf-8") as f:
                     cached = json.load(f)
+                if cached.get("temporal_test_end") != temporal_end:
+                    raise ValueError("replay cache uses a different test cutoff")
                 rep = cached.get("summary")
                 panel = pd.DataFrame(cached.get("panel") or [])
                 log(f"  历史回放缓存命中（{age:.1f} 天前，TTL {ttl_days:.0f} 天）")
@@ -1505,7 +1642,7 @@ def _long_replay_and_select(cfg, params, cached_raw, no_replay, today, log):
             uni, cached_raw, {}, cfg, params,
             n_periods=int(lt_cfg.get("replay_periods", 18)),
             step=int(lt_cfg.get("replay_step", 20)),
-            min_history=int(lt_cfg.get("replay_min_history", 280)))
+            min_history=int(lt_cfg.get("replay_min_history", 280)), end_date=temporal_end)
         panel = res.pop("panel", None)
         rep = res
         log(f"  历史回放完成 {rep.get('n_obs')} 观测 / {rep.get('n_periods')} 截面 "
@@ -1513,7 +1650,7 @@ def _long_replay_and_select(cfg, params, cached_raw, no_replay, today, log):
         if panel is not None and not panel.empty:
             try:
                 with open(cache_path, "w", encoding="utf-8") as f:
-                    json.dump({"summary": rep,
+                    json.dump({"summary": rep, "temporal_test_end": temporal_end,
                                "panel": panel.to_dict("records")},
                               f, ensure_ascii=False, default=str)
             except Exception as e:

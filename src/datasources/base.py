@@ -177,7 +177,10 @@ def norm_date(v):
         return None
     digits = "".join(ch for ch in s if ch.isdigit())
     if len(digits) >= 8:
-        return f"{digits[:4]}-{digits[4:6]}-{digits[6:8]}"
+        try:
+            return datetime.strptime(digits[:8], "%Y%m%d").date().isoformat()
+        except ValueError:
+            return None
     return None
 
 

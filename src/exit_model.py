@@ -34,6 +34,7 @@ import pandas as pd
 
 from indicators import add_indicators
 from strategy import score_row
+from trade_semantics import LabelSpec
 
 WARMUP = 70                     # 指标预热期（与 backtest / factor_eval 一致）
 R_EDGES = (-0.05, -0.02, 0.0, 0.02, 0.05)
@@ -140,6 +141,7 @@ def _symbol_paths(k: pd.DataFrame, market: str, code: str,
             rows.append({
                 "market": market, "code": str(code),
                 "signal_date": dates[i], "entry_date": dates[i + 1],
+                "label_end_date": dates[i + horizon],
                 "date": dates[j], "d": int(j - i),
                 "ret0": ret0,                         # 相对建仓价的累计收益（昨日实盘）
                 "peak_ret": float(peak),              # 持仓期最大浮盈
@@ -227,8 +229,9 @@ def calibrate_states(panel: pd.DataFrame, score_edges: list,
             "mu1": round(float(mu.mean()), 4) if len(mu) else None,
             "p_neg": round(float((v < 0).mean()), 3),
         }
+    trade_keys = (["market"] if "market" in df else []) + ["code", "entry_date"]
     return {"states": states, "coarse": coarse, "global_v": round(v_all, 4),
-            "n_obs": int(len(df)), "n_trades": int(df.groupby(["code", "entry_date"]).ngroups)}
+            "n_obs": int(len(df)), "n_trades": int(df.groupby(trade_keys).ngroups)}
 
 
 # ---------------------------------------------------------------------------
@@ -286,7 +289,7 @@ def _simulate(paths_by_trade: list, states: dict, coarse: dict, score_edges: lis
     if not rets:
         return {"n": 0}
     a = np.asarray(rets, dtype=float)
-    equity = np.cumprod(1.0 + a)
+    equity = np.concatenate(([1.0], np.cumprod(1.0 + a)))
     peak = np.maximum.accumulate(equity)
     return {
         "n": int(len(a)),
@@ -304,23 +307,28 @@ def _simulate(paths_by_trade: list, states: dict, coarse: dict, score_edges: lis
 def evaluate_exit_policy(panel: pd.DataFrame, horizon: int,
                          oos_frac: float = OOS_FRAC,
                          min_bucket_n: int = MIN_BUCKET_N,
-                         shrink_k: float = SHRINK_K) -> "dict | None":
-    """按建仓日切分 IS/OOS，IS 选 τ*，OOS 验证相对基线的增益。
-
-    ⚠️ 状态表只用 IS 段标定、τ 只在 IS 段选，OOS 段完全不参与拟合，
-    因此 OOS 的对比是本模型的真实样本外表现。
-    """
-    if panel is None or panel.empty or "entry_date" not in panel.columns:
+                         shrink_k: float = SHRINK_K,
+                         boundaries: dict | None = None) -> "dict | None":
+    """按建仓日分组，训练段标定、验证段选阈值、固定测试段评估。"""
+    if panel is None or panel.empty or "entry_date" not in panel.columns or "label_end_date" not in panel.columns or not boundaries:
         return None
+    from temporal_validation import configured_boundaries, split_three_way
+    boundaries = configured_boundaries({"temporal_validation": boundaries})
+    if boundaries is None:
+        return None
+
     df = panel.copy()
-    trades = df.groupby(["code", "entry_date"]).size().reset_index(name="m")
+    trade_keys = (["market"] if "market" in df else []) + ["code", "entry_date"]
+    trades = df.groupby(trade_keys).size().reset_index(name="m")
     if len(trades) < 12:
         return None
-    cut_date = sorted(trades["entry_date"].unique())[
-        max(1, int(len(sorted(trades["entry_date"].unique())) * (1 - oos_frac)) - 1)]
-    is_df = df[df["entry_date"] <= cut_date]
-    oos_df = df[df["entry_date"] > cut_date]
-    if is_df.empty or oos_df.empty:
+    try:
+        partition = split_three_way(df, date_col="entry_date", end_col="label_end_date", **boundaries)
+    except (ValueError, TypeError):
+        return None
+    is_df, val_df, oos_df = partition.train, partition.validation, partition.test
+    cut_date = partition.validation_start
+    if is_df.empty or val_df.empty or oos_df.empty:
         return None
 
     edges = _score_edges(is_df["score"].tolist())
@@ -329,8 +337,9 @@ def evaluate_exit_policy(panel: pd.DataFrame, horizon: int,
         return None
     states, coarse = is_cal["states"], is_cal["coarse"]
 
-    is_trades = [g for _, g in is_df.groupby(["code", "entry_date"], sort=False)]
-    oos_trades = [g for _, g in oos_df.groupby(["code", "entry_date"], sort=False)]
+    is_trades = [g for _, g in is_df.groupby(trade_keys, sort=False)]
+    val_trades = [g for _, g in val_df.groupby(trade_keys, sort=False)]
+    oos_trades = [g for _, g in oos_df.groupby(trade_keys, sort=False)]
 
     scan = []
     for tau in TAU_GRID:
@@ -340,13 +349,13 @@ def evaluate_exit_policy(panel: pd.DataFrame, horizon: int,
             # 把 t≈-0.85 的纯噪声判成「建议卖出」——正是这个模块最该避免的事。
             if tm is not None and tm > NEG_T_WEAK:
                 continue
-            r = _simulate(is_trades, states, coarse, edges, tau, min_bucket_n,
+            r = _simulate(val_trades, states, coarse, edges, tau, min_bucket_n,
                           True, horizon, tm)
             if r.get("n"):
                 scan.append({"tau": tau, "t_min": tm, **r})
     if not scan:
         return None
-    # 样本内选择：平均收益最高者优先，并列时取「离场更少」的组合
+    # 验证段选择：平均收益最高者优先，并列时取「离场更少」的组合
     # （更保守：同等收益下不鼓励频繁交易，也降低过拟合面）。
     best = max(scan, key=lambda x: (x["avg_ret"], -x["early_exit_ratio"],
                                     -abs(x["tau"]),
@@ -370,7 +379,11 @@ def evaluate_exit_policy(panel: pd.DataFrame, horizon: int,
         "tau": tau,
         "t_min": t_min,
         "tau_scan": scan,
-        "is": {"baseline": baseline_is, "model": best},
+        "is": {"baseline": baseline_is, "model": _simulate(is_trades, states, coarse, edges, tau, min_bucket_n, True, horizon, t_min)},
+        "validation_selection": best,
+        "validation_start": partition.validation_start,
+        "test_start": partition.test_start,
+        "split_protocol": "date_grouped_label_end_purged_v1",
         "oos": {"baseline": baseline_oos, "model": model_oos, "model_loose": loose_oos},
         "lift": {
             "avg_ret": round((model_oos.get("avg_ret", 0.0) or 0.0)
@@ -392,20 +405,31 @@ def fit_exit_model(kline_map: dict, params: dict,
                    horizon: "int | None" = None,
                    min_bucket_n: int = MIN_BUCKET_N,
                    oos_frac: float = OOS_FRAC,
-                   shrink_k: float = SHRINK_K) -> "dict | None":
-    """标定离场模型：状态表（全样本）+ 样本外验证结论。"""
+                   shrink_k: float = SHRINK_K,
+                   boundaries: dict | None = None) -> "dict | None":
+    """只用训练段标定状态表；阈值由验证段选定，测试段独立评估。"""
+    from temporal_validation import configured_boundaries, split_three_way, truncate_klines
+    boundaries = configured_boundaries({"temporal_validation": boundaries})
+    if boundaries is None:
+        return None
     horizon = int(horizon or params.get("backtest", {}).get("hold_days", 5))
-    panel = build_exit_panel(kline_map, params, horizon)
+    panel = build_exit_panel(truncate_klines(kline_map, boundaries["test_end"]), params, horizon)
     if panel.empty:
         return None
-    edges = _score_edges(panel["score"].tolist())
-    cal = calibrate_states(panel, edges, min_bucket_n, shrink_k)
+    val = evaluate_exit_policy(panel, horizon, oos_frac, min_bucket_n, shrink_k, boundaries)
+    if not val:
+        return None
+    try:
+        training = split_three_way(panel, date_col="entry_date", end_col="label_end_date", **boundaries).train
+    except (ValueError, TypeError):
+        return None
+    edges = _score_edges(training["score"].tolist())
+    cal = calibrate_states(training, edges, min_bucket_n, shrink_k)
     if not cal.get("states"):
         return None
-    val = evaluate_exit_policy(panel, horizon, oos_frac, min_bucket_n, shrink_k)
     tau = float(val["tau"]) if val else 0.0
     t_min = (val.get("t_min") if val else None)
-    symbols = panel.groupby(["market", "code"]).ngroups
+    symbols = training.groupby(["market", "code"]).ngroups
     out = {
         "horizon": horizon,
         "min_bucket_n": min_bucket_n,
@@ -419,7 +443,7 @@ def fit_exit_model(kline_map: dict, params: dict,
         "n_obs": cal["n_obs"],
         "n_trades": cal["n_trades"],
         "n_symbols": int(symbols),
-        "date_range": [str(panel["date"].min()), str(panel["date"].max())],
+        "date_range": [str(training["date"].min()), str(training["date"].max())],
         "validation": val,
     }
     return out
@@ -432,7 +456,7 @@ def _collect_signals(kline_map: dict, params: dict, max_h: int,
                      with_date: bool = False) -> list:
     """一次遍历 K 线，收集所有低吸信号及其建仓后的收盘价序列（供多组参数复用）。
 
-    with_date=True 时返回 (信号日, 建仓价, 后续收盘价序列)——
+    with_date=True 时返回 (信号日, 建仓价, 后续收盘价序列, 最长持有期实际结束日)——
     做 walk-forward 参数选型必须有日期才能切样本内/外。
     """
     thr = float(params["score_threshold"])
@@ -453,7 +477,7 @@ def _collect_signals(kline_map: dict, params: dict, max_h: int,
         n = len(kk)
         cols = [c for c in kk.columns if c != "date"]
         i = WARMUP
-        while i < n - max_h - 1:
+        while i < n - max_h:
             hp = prev_hist[i]
             if not np.isfinite(hp):
                 i += 1
@@ -470,7 +494,8 @@ def _collect_signals(kline_map: dict, params: dict, max_h: int,
             seg = close[i + 1: i + 1 + max_h]
             if len(seg) == max_h and np.all(np.isfinite(seg)):
                 if with_date:
-                    sigs.append((str(kk.iloc[i]["date"])[:10], entry, seg))
+                    sigs.append((str(kk.iloc[i]["date"])[:10], entry, seg,
+                                 str(kk.iloc[i + max_h]["date"])[:10]))
                 else:
                     sigs.append((entry, seg))
             i += 1
@@ -502,7 +527,9 @@ def _simulate_rule(sigs: list, horizon: int, stop, take, return_days: bool = Fal
     out = np.empty(n, dtype=float)
     held = np.empty(n, dtype=float)
     for idx, item in enumerate(sigs):
-        if len(item) == 3:
+        if len(item) == 4:
+            _d, entry, seg, _end = item
+        elif len(item) == 3:
             _d, entry, seg = item
         else:
             entry, seg = item
@@ -534,11 +561,9 @@ def parameter_scan(kline_map: dict, params: dict,
     口径说明：信号独立采样（不做交易去重），因此是**相对比较**，
     不代表实盘组合收益；所有组合使用同一信号集，横向可比。
     """
-    bt = params.get("backtest", {})
-    cur_h = int(bt.get("hold_days", 5))
-    cur_s = float(bt.get("stop_loss", -0.05))
-    cur_t = float(bt.get("take_profit", 0.08))
-    sigs = _collect_signals(kline_map, params, max(horizons))
+    spec = LabelSpec.from_params(params)
+    cur_h, cur_s, cur_t = spec.hold_days, spec.stop_loss, spec.take_profit
+    sigs = _collect_signals(kline_map, params, max((cur_h, *horizons)))
     if len(sigs) < 50:
         return None
     base = _summ(_simulate_rule(sigs, cur_h, cur_s, cur_t))
@@ -574,10 +599,8 @@ def exit_advice(positions: list, model: "dict | None", params: dict) -> list:
     positions: [{"code","name","market","days_held","ret","entry_score",...}]
     返回同长度列表，追加 advice / reason / expect_ret / expect_n / expect_t / level。
     """
-    bt = params.get("backtest", {})
-    horizon = int(bt.get("hold_days", 5))
-    stop = float(bt.get("stop_loss", -0.05))
-    take = float(bt.get("take_profit", 0.08))
+    spec = LabelSpec.from_params(params)
+    horizon, stop, take = spec.hold_days, spec.stop_loss, spec.take_profit
     states = (model or {}).get("states") or {}
     coarse = (model or {}).get("coarse") or {}
     edges = (model or {}).get("score_edges") or []
@@ -609,9 +632,9 @@ def exit_advice(positions: list, model: "dict | None", params: dict) -> list:
             rec.update(advice="SELL", reason=f"持有到期（{d}≥{horizon} 个交易日）")
         elif d <= 0:
             rec.update(advice="HOLD", reason="新开仓（T+0），自下一交易日起进入离场评估")
-        elif r <= stop:
+        elif stop is not None and r <= stop:
             rec.update(advice="SELL", reason=f"触发止损（{r * 100:.1f}% ≤ {stop * 100:.0f}%）")
-        elif r >= take:
+        elif take is not None and r >= take:
             rec.update(advice="SELL", reason=f"达成止盈（{r * 100:.1f}% ≥ {take * 100:.0f}%）")
         elif st is None:
             rec.update(advice="HOLD", reason="无可用状态样本，维持持有")
@@ -621,27 +644,26 @@ def exit_advice(positions: list, model: "dict | None", params: dict) -> list:
                               f"（参考 E={st['v'] * 100:+.2f}%）")
         else:
             # 分层判定：**幅度**（E < τ）决定是否要动，**可信度**（t 值）决定动到什么程度。
-            # 两者必须同时看：E 在 ±0.05% 量级的偏差全是噪声，
-            # 只按 E<τ 判卖会出现「浮盈 +1.8% 也建议清仓」的荒谬结论。
-            # t_min 由样本内扫描选出、样本外验证（见 report 第七章），不写死。
+            # 显式t门槛须与验证使用的策略一致；None表示选定策略不设t门槛。
+            # 不能以较松的固定弱显著线覆盖选定门槛。
             v, t = st["v"], st.get("v_t")
             tn = "t 不可算" if t is None else f"t={t:+.2f}"
             if v >= tau:
                 rec.update(advice="HOLD",
-                           reason=f"继续持有期望为正（E={v * 100:+.2f}%，"
+                           reason=f"继续持有期望未低于选定阈值（E={v * 100:+.2f}%，"
                                   f"τ={tau * 100:+.1f}%，n={st['n']}）")
-            elif t is not None and t_min is not None and t <= t_min:
+            elif t_min is None:
                 rec.update(advice="SELL",
-                           reason=f"继续持有期望为负且达可信门槛（E={v * 100:+.2f}% < "
+                           reason=f"继续持有期望低于选定离场阈值（E={v * 100:+.2f}% < "
+                                  f"τ={tau * 100:+.1f}%，模型未设置t门槛，n={st['n']}）")
+            elif t is not None and t <= t_min:
+                rec.update(advice="SELL",
+                           reason=f"继续持有期望低于阈值且达选定门槛（E={v * 100:+.2f}% < "
                                   f"τ={tau * 100:+.1f}%，{tn}≤{t_min:+.1f}，n={st['n']}）")
-            elif t is not None and t <= NEG_T_WEAK:
-                rec.update(advice="SELL",
-                           reason=f"继续持有期望为负且弱显著（E={v * 100:+.2f}% < "
-                                  f"τ={tau * 100:+.1f}%，{tn}≤{NEG_T_WEAK:+.1f}，n={st['n']}）")
             else:
                 rec.update(advice="WATCH",
-                           reason=f"期望为负但可信度不足（E={v * 100:+.2f}%，{tn}，"
-                                  f"未达门槛 {t_min if t_min is not None else NEG_T_WEAK:+.1f}，"
+                           reason=f"期望低于离场阈值但未达选定可信门槛（E={v * 100:+.2f}%，{tn}，"
+                                  f"未达门槛 {t_min:+.1f}，"
                                   f"n={st['n']}）——建议盯盘/收紧止损，不构成独立卖出依据")
         out.append(rec)
 

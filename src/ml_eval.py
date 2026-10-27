@@ -26,25 +26,9 @@
 这与短线选型层踩过的坑一致：那边样本内优势 198% 过拟合、样本外 −0.220pct。
 「加上去看着更全」不是理由，样本外能站住才是。
 
-采纳门禁（四关全过才建议采用）
-----------------------------
-1. 样本外 IC 均值**严格高于**规则分；
-2. ICIR 不低于规则分（稳定性不许变差——均值高但忽正忽负的信号更难用）；
-3. 尾部守卫：去掉 |IC| 最大的 10% 截面后优势仍在（不能只靠少数极端日撑起来）；
-4. 置换检验显著：在每个截面内打乱收益后重跑整条流程，真实 IC 必须落在原假设
-   分布之外（长期面板只有几十个截面、二十来个标的，IC 的标准误很大，
-   「0.49 比 0.15 高」完全可能只是抽样波动）。
-
-另设样本量底线：样本外截面数 < 8 时只报数、不给结论。样本太薄时任何「更优」
-都只是在描述噪声。
-
-purge：不做的话，「样本外」这个词是假的
-------------------------------------
-前向收益是**重叠窗口**。实测截面间隔中位 22 天、持有 120 交易日（≈174 日历日），
-相邻截面的收益窗口重叠约 87%——把 t−1 的 (特征, 收益) 放进训练集去预测 t，
-等于提前看过同一段行情。所以训练样本要求「收益窗口已在测试截面之前完全结束」，
-再加一个 embargo 截面。第一版没有做这一步，GBR 样本外 IC 报出 +0.49；加上
-purge 之后才是可以拿来说事的数字。
+研究输出只作为观察，不自动接入生产评分。候选先在验证段选取，
+固定测试段只评价该候选和规则基准；跨实验封存、晋级及搜索登记属于后续任务。
+实际标签结束日用于清除，按交易日数折算的日历跨度只作为展示参考。
 """
 import re
 
@@ -56,8 +40,7 @@ FEATURES = ["v_quality", "v_growth", "v_cashflow", "v_balance", "v_valuation"]
 DEFAULT_HORIZON = 120
 MIN_OOF_PERIODS = 8
 
-# A 股一年约 243 个交易日。用 252 折算「N 个交易日 ≈ 多少日历日」会**略微高估**
-# 日历跨度，高估的方向是多剔除训练样本——安全的一侧。
+# 仅作为展示参考；训练样本的成熟时点以逐行实际标签结束日为准。
 _TRADING_DAYS_PER_YEAR = 252.0
 DEFAULT_EMBARGO_PERIODS = 1
 DEFAULT_N_PERM = 20
@@ -66,8 +49,8 @@ DEFAULT_N_PERM = 20
 def horizon_calendar_days(target: str, horizon_days=None) -> int:
     """把「持有 N 个交易日」折算成日历天数。
 
-    从目标列名（`ret_120`）推断，或由调用方显式给出。purge 需要日历日而不是
-    交易日，因为截面日期之间的间隔不固定（实测 6~36 天）。
+    从目标列名（`ret_120`）推断，或由调用方显式给出。该估算仅供展示，
+    不得代替真实交易日和每行标签结束日。
     """
     if horizon_days:
         return int(horizon_days)
@@ -127,23 +110,28 @@ def walk_forward_predict(panel: pd.DataFrame, features=None, target: str = "ret_
     持有 120 交易日（≈174 日历日），则相邻截面的收益窗口重叠约 87%。若把
     t−1 的 (特征, 收益) 放进训练集去预测 t，模型等于提前看过同一段行情，
     样本外 IC 会被系统性高估。所以训练样本必须满足「其收益窗口已在测试日
-    之前完全结束」：
-
-        date(train) + horizon(日历日) + embargo ≤ date(test)
+    之前完全结束」：实际标签结束日须严格早于预测日期。
 
     embargo 再往前推若干截面，切断「相邻截面特征几乎相同」带来的隐性重叠。
     A 股财务六维在相邻横截面间变化很小（实测 v_quality 相邻 |Δ| 中位 0），
     这条尤其重要。
     """
     features = list(features or FEATURES)
-    out = pd.Series(np.nan, index=panel.index, dtype=float)
+    out = pd.Series(np.nan, index=panel.index if panel is not None else [], dtype=float)
     if panel is None or panel.empty or target not in panel.columns:
         return out
     dstr = panel["date"].astype(str)
     dates = sorted(dstr.unique())
     purge_days = horizon_calendar_days(target, horizon_days) if purge else 0
     emb = DEFAULT_EMBARGO_PERIODS if embargo_periods is None else int(embargo_periods)
-    dts = pd.to_datetime(dstr, errors="coerce") if purge_days else None
+    end_col = f"label_end_{target}"
+    if purge and end_col not in panel:
+        if diag is not None:
+            diag.update({"purge": True, "label_end_status": "missing", "purge_days": purge_days,
+                         "embargo_periods": emb, "first_test_date": None})
+        return out
+    ends = pd.to_datetime(panel[end_col], errors="coerce") if purge else None
+    starts = pd.to_datetime(dstr, errors="coerce") if purge else None
     first_test, first_train_max, last_train_max = None, None, None
     for i, d in enumerate(dates):
         if i < int(min_train_periods):
@@ -151,9 +139,8 @@ def walk_forward_predict(panel: pd.DataFrame, features=None, target: str = "ret_
         te = panel[dstr == d]
         if te.empty:
             continue
-        if purge_days:
-            cut = pd.Timestamp(d) - pd.Timedelta(days=purge_days)
-            tr = panel[(dstr < d) & (dts <= cut)]
+        if purge:
+            tr = panel[(dstr < d) & ends.notna() & starts.notna() & (ends >= starts) & (ends < pd.Timestamp(d))]
         else:
             tr = panel[dstr < d]
         tr = tr.dropna(subset=[target])
@@ -178,6 +165,7 @@ def walk_forward_predict(panel: pd.DataFrame, features=None, target: str = "ret_
         # 两个训练上界分开记：只有「首次预测时的训练上界」能用来核对 purge 契约，
         # 用最后一次迭代的值去核对会得到「训练日期晚于测试日期」的假失败。
         diag.update({"purge": bool(purge), "purge_days": purge_days,
+                     "label_end_status": "actual" if purge else "disabled",
                      "embargo_periods": emb, "first_test_date": first_test,
                      "first_train_max": first_train_max,
                      "last_train_max": last_train_max})
@@ -254,8 +242,12 @@ def permutation_null(panel: pd.DataFrame, ret_col: str = "ret_120",
     nulls = []
     for _ in range(max(1, int(n_perm))):
         sh = panel.copy()
-        sh[ret_col] = sh.groupby("date")[ret_col].transform(
-            lambda v: rng.permutation(v.to_numpy()))
+        end_col = f"label_end_{ret_col}"
+        pair = [ret_col] + ([end_col] if end_col in sh else [])
+        for indices in sh.groupby("date", sort=False).indices.values():
+            values = sh.iloc[indices][pair].to_numpy()[rng.permutation(len(indices))]
+            for i, column in enumerate(pair):
+                sh.iloc[indices, sh.columns.get_loc(column)] = values[:, i]
         oof = walk_forward_predict(sh, features=features, target=ret_col,
                                   kind=kind, seed=seed, **kw)
         sh["_perm_pred"] = oof
@@ -288,96 +280,109 @@ def evaluate_against_rule(panel: pd.DataFrame, ret_col: str = "ret_120",
                           trim: float = 0.10, seed: int = 0, purge: bool = True,
                           embargo_periods: int = None, horizon_days=None,
                           n_perm: int = DEFAULT_N_PERM,
-                          p_threshold: float = 0.10) -> dict:
-    """把 ML 样本外预测与规则分放到同一把尺子上比较，并给出采纳结论。
-
-    返回：`{ret_col, rule, candidates, best, gate, perm, verdict, walk_forward}`
-    """
-    out = {"ret_col": ret_col, "features": list(features or FEATURES),
-           "n_rows": 0, "n_periods": 0, "rule": None, "candidates": {},
-           "best": None, "gate": {}, "perm": {}, "walk_forward": {},
+                          p_threshold: float = 0.10, boundaries: dict | None = None) -> dict:
+    """Choose a model on validation only, then evaluate one locked test block."""
+    from temporal_validation import configured_boundaries, split_three_way
+    columns = list(features or FEATURES)
+    out = {"ret_col": ret_col, "features": columns, "n_rows": 0, "n_periods": 0,
+           "rule": None, "candidates": {}, "selection_candidates": {}, "best": None,
+           "gate": {"passed": False}, "perm": {}, "walk_forward": {},
            "p_threshold": float(p_threshold), "verdict": ""}
     if panel is None or panel.empty or ret_col not in panel.columns:
         out["verdict"] = f"面板缺失或没有 {ret_col} 列，无法评估"
         return out
-    out["n_rows"] = int(len(panel))
-    out["n_periods"] = int(panel["date"].nunique())
-
-    work = panel.copy()
-    out["rule"] = _summarize(work, "score", ret_col, min_n=min_n, trim=trim)
-    if out["rule"] is None:
-        out["verdict"] = "规则分样本不足，无法作为基准"
+    out["n_rows"], out["n_periods"] = len(panel), int(panel["date"].nunique())
+    if not purge:
+        out["verdict"] = "清除跨界标签已关闭，不能用于独立测试或准入"
         return out
-
-    kw = {"min_train_periods": min_train_periods, "min_train_rows": min_train_rows,
-          "purge": purge, "embargo_periods": embargo_periods,
-          "horizon_days": horizon_days}
+    boundaries = configured_boundaries({"temporal_validation": boundaries})
+    if boundaries is None:
+        out["verdict"] = "未提供已结束的固定验证和测试日期边界，无法评估"
+        return out
+    end_col = f"label_end_{ret_col}"
+    try:
+        parts = split_three_way(panel, date_col="date", end_col=end_col, **boundaries)
+    except (ValueError, TypeError) as exc:
+        out["verdict"] = f"实际标签结束日或日期分区不足，无法评估：{exc}"
+        return out
+    train = parts.train.dropna(subset=[ret_col])
+    val = parts.validation.dropna(subset=[ret_col])
+    test = parts.test.dropna(subset=[ret_col])
+    emb = DEFAULT_EMBARGO_PERIODS if embargo_periods is None else int(embargo_periods)
+    if emb < 0:
+        raise ValueError("embargo must be nonnegative")
+    def remove_recent(frame):
+        dates = sorted(frame["date"].astype(str).unique())
+        return frame[~frame["date"].astype(str).isin(dates[-emb:])] if emb else frame
+    train = remove_recent(train)
+    final_train = remove_recent(pd.concat([parts.train, val]).dropna(subset=[ret_col]))
+    if len(train) < min_train_rows or train["date"].nunique() < min_train_periods or len(val) < min_n or len(test) < min_n:
+        out["verdict"] = "训练、验证或封存测试样本不足，预测为空，维持现状"
+        return out
     for kind in kinds:
-        diag = {}
-        oof = walk_forward_predict(work, features=features, target=ret_col,
-                                   kind=kind, seed=seed, diag=diag, **kw)
-        col = f"_ml_{kind}"
-        work[col] = oof
-        s = _summarize(work, col, ret_col, min_n=min_n, trim=trim)
-        if s is not None:
-            s["n_oof"] = int(oof.notna().sum())
-            s["model"] = kind
-            s.update({f"wf_{k}": v for k, v in diag.items()})
-            out["candidates"][kind] = s
-
-    if not out["candidates"]:
-        out["verdict"] = "样本外预测为空（训练窗口不足或 purge 后无可用训练样本）"
+        try:
+            pred = _fit_predict(_model(kind, seed), train[columns], train[ret_col].astype(float), val[columns])
+            score = _summarize(val.assign(_pred=pred), "_pred", ret_col, min_n=min_n, trim=trim)
+        except (ValueError, KeyError, TypeError):
+            continue
+        if score:
+            out["selection_candidates"][kind] = score
+    if not out["selection_candidates"]:
+        out["verdict"] = "验证集候选预测为空，维持现状"
         return out
-    best_kind = max(out["candidates"], key=lambda k: out["candidates"][k]["ic_mean"])
-    best = out["candidates"][best_kind]
+    best_kind = max(out["selection_candidates"], key=lambda k: out["selection_candidates"][k]["ic_mean"])
     out["best"] = best_kind
-    out["walk_forward"] = {k[3:]: v for k, v in best.items() if k.startswith("wf_")}
-
-    r = out["rule"]
-    # 样本外截面太薄时，「更优」只是在描述噪声，不给结论。
-    if best["n_periods"] < int(min_oof_periods):
-        out["gate"] = {"passed": False, "reason": "oof_too_few"}
-        out["verdict"] = (f"样本外仅 {best['n_periods']} 个截面（需 ≥"
-                          f"{int(min_oof_periods)}），只报数、不下结论")
+    try:
+        predicted = _fit_predict(_model(best_kind, seed), final_train[columns], final_train[ret_col].astype(float), test[columns])
+    except (ValueError, KeyError, TypeError) as exc:
+        out["verdict"] = f"封存测试预测失败，维持现状：{exc}"
         return out
-
-    # 置换检验：先回答「这个 IC 是不是抽样波动」。
+    held = test.assign(_pred=predicted)
+    comparison_columns = ["score", "_pred", ret_col]
+    numeric = held[comparison_columns].apply(pd.to_numeric, errors="coerce")
+    common_rows = np.isfinite(numeric.to_numpy()).all(axis=1)
+    held = held.loc[common_rows].copy()
+    held[comparison_columns] = numeric.loc[common_rows]
+    # Both predictors must be measurable on the same rows and dates. Otherwise
+    # missing rule scores or a constant prediction compare different markets.
+    common_dates = [
+        day for day, group in held.groupby("date")
+        if len(group) >= min_n and (group[comparison_columns].nunique() >= 3).all()
+    ]
+    held = held.loc[held["date"].isin(common_dates)].copy()
+    rule = _summarize(held, "score", ret_col, min_n=min_n, trim=trim)
+    result = _summarize(held, "_pred", ret_col, min_n=min_n, trim=trim)
+    if not rule or not result:
+        out["verdict"] = "封存测试截面不足，维持现状"
+        return out
+    out["rule"] = rule
+    out["comparison"] = {"n_rows": len(held), "n_periods": len(common_dates),
+                         "excluded_rows": len(test) - len(held),
+                         "protocol": "same_finite_rows_and_evaluable_dates"}
+    out["candidates"][best_kind] = {**result, "n_oof": len(held), "model": best_kind}
+    out["walk_forward"] = {"purge": True, "purge_days": horizon_calendar_days(ret_col, horizon_days),
+                           "label_end_status": "actual", "embargo_periods": emb,
+                           "first_test_date": parts.test_start, "validation_start": parts.validation_start,
+                           "test_start": parts.test_start, "protocol": "sealed_test_v1"}
     if n_perm and int(n_perm) > 0:
-        out["perm"] = permutation_null(work, ret_col=ret_col, kind=best_kind,
-                                       n_perm=n_perm, features=features, seed=seed,
-                                       **kw)
-        out["perm"]["best"] = best_kind
-        out["perm"]["real_ic"] = best["ic_mean"]
-        out["perm"]["p_value"] = _p_value(best["ic_mean"],
-                                          out["perm"].get("nulls"))
-
-    g = {
-        "ic_higher": best["ic_mean"] > r["ic_mean"],
-        "icir_not_lower": (best["icir"] is not None and r["icir"] is not None
-                           and best["icir"] >= r["icir"]),
-        "tail_holds": (best["ic_mean_trimmed"] is not None
-                       and r["ic_mean_trimmed"] is not None
-                       and best["ic_mean_trimmed"] > r["ic_mean_trimmed"]),
-    }
-    p = out["perm"].get("p_value")
-    if p is None:
-        g["perm_significant"] = None      # 未做置换检验时不作为否决项
-    else:
-        g["perm_significant"] = bool(p <= float(p_threshold))
-    g["passed"] = all(v for v in g.values() if v is not None)
-    out["gate"] = g
-    if g["passed"]:
-        out["verdict"] = (
-            f"「{best_kind}」四关全过（IC {best['ic_mean']:+.4f} vs 规则 "
-            f"{r['ic_mean']:+.4f}；ICIR {best['icir']} vs {r['icir']}；去尾部 "
-            f"{best['ic_mean_trimmed']:+.4f} vs {r['ic_mean_trimmed']:+.4f}；"
-            f"置换 p={p}）：可作为候选接入，接入前仍需一次独立样本外复现")
-    else:
-        miss = [k for k in ("ic_higher", "icir_not_lower", "tail_holds",
-                            "perm_significant") if g.get(k) is False]
-        extra = "" if p is not None else "（未做置换检验，显著性未知）"
-        out["verdict"] = (f"未过门禁（{','.join(miss) or '—'}）{extra}："
-                          f"维持现状，不把 ML 分数接入评分")
+        rng = np.random.default_rng(seed)
+        nulls = []
+        for _ in range(int(n_perm)):
+            shuffled = held.copy()
+            shuffled[ret_col] = shuffled.groupby("date")[ret_col].transform(lambda x: rng.permutation(x.to_numpy()))
+            stat = _summarize(shuffled, "_pred", ret_col, min_n=min_n, trim=trim)
+            if stat:
+                nulls.append(stat["ic_mean"])
+        if nulls:
+            arr = np.asarray(nulls)
+            out["perm"] = {"n_perm": len(nulls), "null_mean": round(float(arr.mean()),4),
+                           "null_std": round(float(arr.std(ddof=1)),4) if len(arr)>1 else 0.0,
+                           "null_max": round(float(arr.max()),4), "null_min": round(float(arr.min()),4),
+                           "nulls": nulls, "best": best_kind, "real_ic": result["ic_mean"],
+                           "p_value": _p_value(result["ic_mean"], nulls)}
+    out["gate"] = {"passed": False, "reason": "research_only_pending_registration", "test_periods": result["n_periods"]}
+    out["verdict"] = ("封存测试截面不足，只报数，维持现状" if result["n_periods"] < min_oof_periods
+                      else "验证集选型、独立测试仅作研究观察，维持现状；候选登记和准入在后续任务完成。")
     return out
 
 
@@ -393,10 +398,10 @@ def render_md(res: dict) -> str:
         "",
         f"- 面板：{res['n_rows']} 观测 / {res['n_periods']} 个截面，"
         f"目标 {res['ret_col']}，特征 {len(res['features'])} 维",
-        f"- 切分：expanding window + **purge {wf.get('purge_days')} 日历日**"
-        f"（= 持有期，防重叠窗口泄漏）+ embargo {wf.get('embargo_periods')} 个截面；"
+        f"- 切分：按实际标签结束日 purge（{wf.get('purge_days')} 日历日为参考）"
+        f"+ embargo {wf.get('embargo_periods')} 个截面；"
         f"首个可预测截面 {wf.get('first_test_date')}",
-        "- **四关门禁**：样本外 IC 更高 + ICIR 不降 + 去尾部后优势仍在 + 置换检验显著。",
+        "- **四关门禁**目前不执行晋级；候选登记与独立准入由后续任务处理。",
         "",
         "| 候选 | 样本外截面 | IC 均值 | ICIR | t | 正比例 | 去尾部10% IC |",
         "|---|---|---|---|---|---|---|",
@@ -419,11 +424,10 @@ def render_md(res: dict) -> str:
     lines.append("")
     if perm.get("null_mean") is not None:
         lines.append(
-            f"- 置换检验（打乱截面内收益后重跑整条流程 {perm.get('n_perm')} 次）："
+            f"- 置换检验（固定测试预测，打乱测试截面内收益 {perm.get('n_perm')} 次）："
             f"原假设 IC 均值 {perm['null_mean']:+.4f}、标准差 {perm['null_std']:.4f}、"
             f"最大 {perm['null_max']:+.4f}；真实值 {perm.get('real_ic')} → "
-            f"**p = {perm.get('p_value')}**（阈值 {res.get('p_threshold')}）。"
-            f"若流程本身泄漏，打乱后的 IC 也会显著偏离 0。")
+            f"**p = {perm.get('p_value')}**（阈值 {res.get('p_threshold')}）；该检验不证明训练流程无泄漏。")
         lines.append("")
     lines += [f"**结论**：{res['verdict']}", ""]
     lines.append("> purge 的含义：训练样本的收益窗口必须在测试截面之前**完全结束**。"

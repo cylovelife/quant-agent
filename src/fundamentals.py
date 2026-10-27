@@ -35,6 +35,7 @@
 按「数据周期 TTL + 请求失败回退旧缓存」复用，避免每次运行重复请求。
 """
 import json
+import math
 import os
 import re
 import time
@@ -45,6 +46,7 @@ import pandas as pd
 import csc_source
 import fetcher
 import store
+from data_quality import financial_available_date
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIN_DIR = os.path.join(ROOT, "state", "cache", "fin")
@@ -291,24 +293,37 @@ def fetch_kline_raw(code: str, market: str = "cn", limit: int = 900,
             try:
                 with open(path, encoding="utf-8") as f:
                     recs = json.load(f)
+                source = "tencent_ifzq_raw"
+                if isinstance(recs, dict):
+                    source = recs.get("source", "")
+                    recs = recs.get("rows", [])
+                    if source not in {"tencent_ifzq_raw", "tencent_proxy_ifzq_raw"}:
+                        recs = []
                 if recs:
                     df = pd.DataFrame(recs)
                     df["date"] = pd.to_datetime(df["date"])
-                    store.upsert_kline(market, code, "raw", df, src="tencent_ifzq_raw")
+                    store.upsert_kline(market, code, "raw", df, src=source)
                     return df
             except Exception:
                 pass
     if market == "fund":
         return pd.DataFrame()
     tx = fetcher._tx_code(code, market, mkt_id)
-    try:
-        # 与 fetcher.fetch_kline 同源，但 param 不写 qfq -> 不复权
-        r = fetcher._get(fetcher._KLINE_URLS[market],
-                         {"param": f"{tx},day,,,{limit},"}, min_gap=0.35).json()
-        d = (r.get("data") or {}).get(tx, {})
-        klines = d.get("day") or d.get("qfqday") or []
-    except Exception:
-        klines = []
+    # The proxy is the active CN/ETF endpoint; request raw day rows, never qfq.
+    endpoints = [(fetcher._KLINE_URLS[market], "tencent_ifzq_raw")]
+    if market in {"cn", "etf"}:
+        endpoints.insert(0, (fetcher._CN_KLINE_FALLBACK, "tencent_proxy_ifzq_raw"))
+    klines = []
+    source = ""
+    for url, candidate_source in endpoints:
+        try:
+            r = fetcher._get(url, {"param": f"{tx},day,,,{limit},"}, min_gap=0.35).json()
+            klines = ((r.get("data") or {}).get(tx) or {}).get("day") or []
+        except Exception:
+            klines = []
+        if klines:
+            source = candidate_source
+            break
     recs = []
     for item in klines:
         try:
@@ -327,10 +342,10 @@ def fetch_kline_raw(code: str, market: str = "cn", limit: int = 900,
             return stale
         return pd.DataFrame()
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(recs, f, ensure_ascii=False)
+        json.dump({"source": source, "rows": recs}, f, ensure_ascii=False)
     df = pd.DataFrame(recs)
     df["date"] = pd.to_datetime(df["date"])
-    store.upsert_kline(market, code, "raw", df, src="tencent_ifzq_raw")
+    store.upsert_kline(market, code, "raw", df, src=source)
     return df
 
 
@@ -606,8 +621,8 @@ def derived_metrics(rows: list) -> dict:
         return (sum((x - m) ** 2 for x in v) / (len(v) - 1)) ** 0.5
 
     # 质量：ROE 近 3 年（不足则取现有）
-    roes = [g(r, "ROEJQ") for r in ann[-3:]] or [g(r, "ROEJQ")]
-    gm = [g(r, "XSMLL") for r in ann[-3:]] or [g(r, "XSMLL")]
+    roes = [g(r, "ROEJQ") for r in ann[-3:]] or [g(last, "ROEJQ")]
+    gm = [g(r, "XSMLL") for r in ann[-3:]] or [g(last, "XSMLL")]
     m = {
         "report_date": str(last.get("REPORT_DATE") or "")[:10],
         "report_type": last.get("REPORT_TYPE"),
@@ -672,17 +687,27 @@ def valuation_percentile(kline_raw: pd.DataFrame, rows: list,
     cur = float(k["close"].iloc[-1])
     if hi > lo:
         out["px_pct"] = round((cur - lo) / (hi - lo), 3)
-    bps_rows = [(str(r.get("REPORT_DATE") or "")[:10], r.get("BPS"))
-                for r in (rows or []) if r.get("BPS")]
-    bps_rows = sorted([(d, float(v)) for d, v in bps_rows if d], key=lambda x: x[0])
+    bps_rows = []
+    for report in rows or []:
+        available = financial_available_date(report)
+        try:
+            report_date = date.fromisoformat(str(report.get("REPORT_DATE") or "")[:10]).isoformat()
+            bps = float(report.get("BPS"))
+        except (TypeError, ValueError):
+            continue
+        if available and available >= report_date and math.isfinite(bps) and bps > 0:
+            bps_rows.append((report_date, available, bps))
     if len(bps_rows) >= 3:
         series = []
         for _, row in k.iterrows():
             d = row["date"].strftime("%Y-%m-%d")
-            cand = [v for dd, v in bps_rows if dd <= d]
-            if not cand or not cand[-1] or cand[-1] <= 0:
+            # A report period is not its publication date. Date-only disclosures
+            # become usable the following day; a late correction of an older
+            # period must not replace a newer report already available then.
+            cand = [report for report in bps_rows if report[1] < d]
+            if not cand:
                 continue
-            series.append(float(row["close"]) / cand[-1])
+            series.append(float(row["close"]) / max(cand, key=lambda r: (r[0], r[1]))[2])
         if len(series) >= 60:
             s = pd.Series(series)
             out["pb_median"] = round(float(s.median()), 3)

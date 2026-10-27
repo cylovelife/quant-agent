@@ -20,6 +20,11 @@ sys.path.insert(0, os.path.join(ROOT, "src"))
 
 import ml_eval  # noqa: E402
 
+_START = pd.Timestamp("2022-01-02")
+BOUNDS = {"validation_start": str((_START + pd.Timedelta(days=36*22)).date()),
+          "test_start": str((_START + pd.Timedelta(days=48*22)).date()),
+          "test_end": str((_START + pd.Timedelta(days=59*22+174)).date())}
+
 _fails = []
 
 
@@ -31,7 +36,7 @@ def check(name: str, cond: bool, detail: str = ""):
 
 
 def _panel(n_dates=25, n_sym=20, seed=1, signal=0.0, feature="v_quality",
-           step_days=22, start="2024-01-02"):
+           step_days=22, start="2022-01-02"):
     """造一个受控面板：ret = signal × feature + 噪声。
 
     `step_days` 默认 22 天，与真实长期回放的截面间距（实测中位 22 天）一致——
@@ -48,7 +53,8 @@ def _panel(n_dates=25, n_sym=20, seed=1, signal=0.0, feature="v_quality",
             f = {k: float(v) for k, v in zip(feats, base + rng.normal(0, 6, len(feats)))}
             y = signal * f[feature] + rng.normal(0, 1.0)
             rows.append({"date": d, "code": f"S{s:03d}", "market": "cn",
-                         "score": float(rng.normal(0, 1)), "ret_120": y, **f})
+                         "score": float(rng.normal(0, 1)), "ret_120": y,
+                         "label_end_ret_120": str((pd.Timestamp(d) + pd.Timedelta(days=174)).date()), **f})
     return pd.DataFrame(rows)
 
 
@@ -127,17 +133,17 @@ def test_purge_contract():
 
 def test_signal_and_noise():
     print("· 有信号应被识别，纯噪声不得虚高（否则「无改进」结论不可信）")
-    strong = _panel(25, 20, seed=3, signal=4.0)
-    res = ml_eval.evaluate_against_rule(strong, "ret_120", n_perm=0)
+    strong = _panel(60, 20, seed=3, signal=4.0)
+    res = ml_eval.evaluate_against_rule(strong, "ret_120", n_perm=0, boundaries=BOUNDS)
     best = res["candidates"].get(res["best"] or "", {})
     check("识别出 ML 候选", bool(res["candidates"]), str(list(res["candidates"])))
     check("强信号下样本外 IC 明显为正", (best.get("ic_mean") or 0) > 0.3,
           str(best.get("ic_mean")))
-    check("强信号下门禁通过", res["gate"].get("passed") is True, str(res["gate"]))
-    check("结论给出建议接入", "接入" in (res["verdict"] or ""), res["verdict"])
+    check("强信号仍不自动晋级", res["gate"].get("passed") is False, str(res["gate"]))
+    check("结论保留研究观察", "研究观察" in (res["verdict"] or ""), res["verdict"])
 
-    noise = _panel(25, 20, seed=11, signal=0.0)
-    r2 = ml_eval.evaluate_against_rule(noise, "ret_120", n_perm=0)
+    noise = _panel(60, 20, seed=11, signal=0.0)
+    r2 = ml_eval.evaluate_against_rule(noise, "ret_120", n_perm=0, boundaries=BOUNDS)
     nb = r2["candidates"].get(r2["best"] or "", {})
     check("纯噪声面板上样本外 IC 接近 0（不虚高）",
           abs(nb.get("ic_mean") or 1) < 0.25, str(nb.get("ic_mean")))
@@ -146,9 +152,9 @@ def test_signal_and_noise():
 def test_permutation():
     print("· 置换检验：把「更好」变成「显著更好」")
     # 无预测力的面板：真实 IC 应落回原假设分布内，p 值不小
-    noise = _panel(25, 20, seed=21, signal=0.0)
+    noise = _panel(60, 20, seed=21, signal=0.0)
     r = ml_eval.evaluate_against_rule(noise, "ret_120", kinds=("ridge",),
-                                      n_perm=8, seed=1)
+                                      n_perm=8, seed=1, boundaries=BOUNDS)
     pm = r.get("perm") or {}
     check("置换得到原假设分布", pm.get("n_perm") == 8 and
           pm.get("null_mean") is not None, str(pm.get("n_perm")))
@@ -160,9 +166,9 @@ def test_permutation():
     # 有预测力的面板：真实 IC 应在原假设分布之外
     # n_perm 决定 p 值下界 = 1/(n_perm+1)：n_perm=8 时下界 0.111，永远过不了 0.10，
     # 所以这里必须用 ≥10 次，否则测的是「样本量不够」而不是「信号显著」。
-    sig = _panel(25, 20, seed=22, signal=5.0)
+    sig = _panel(60, 20, seed=22, signal=5.0)
     r2 = ml_eval.evaluate_against_rule(sig, "ret_120", kinds=("ridge",),
-                                       n_perm=12, seed=1)
+                                       n_perm=12, seed=1, boundaries=BOUNDS)
     pm2 = r2.get("perm") or {}
     check("有信号时 p 值显著", (pm2.get("p_value") or 1) <= 0.10, str(pm2.get("p_value")))
     check("p 值计算含 +1 修正（不会取到 0）", (pm2.get("p_value") or 0) > 0,
@@ -174,7 +180,7 @@ def test_permutation():
 def test_gate_and_sample_floor():
     print("· 门禁与样本底线")
     small = _panel(9, 20, seed=5, signal=4.0)
-    r = ml_eval.evaluate_against_rule(small, "ret_120", min_train_periods=6, n_perm=0)
+    r = ml_eval.evaluate_against_rule(small, "ret_120", min_train_periods=6, n_perm=0, boundaries=BOUNDS)
     check("样本过薄时不下结论",
           "只报数" in (r["verdict"] or "") or "预测为空" in (r["verdict"] or ""),
           r["verdict"])
@@ -198,8 +204,8 @@ def test_gate_and_sample_floor():
 
 def test_render():
     print("· 渲染")
-    res = ml_eval.evaluate_against_rule(_panel(25, 20, seed=4, signal=3.0),
-                                        "ret_120", n_perm=4)
+    res = ml_eval.evaluate_against_rule(_panel(60, 20, seed=4, signal=3.0),
+                                        "ret_120", n_perm=4, boundaries=BOUNDS)
     md = ml_eval.render_md(res)
     check("含基准行", "规则分（基准）" in md)
     check("含 ML 行", "ML·" in md)

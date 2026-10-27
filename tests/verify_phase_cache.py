@@ -17,10 +17,13 @@
 用法：
     python tests/verify_phase_cache.py              # 复用 K 线缓存（约 4 分钟）
     python tests/verify_phase_cache.py --refresh    # 重新抓 K 线
+    python tests/verify_phase_cache.py --synthetic  # 纯构造数据，三阶段均实际计算并命中
+
+默认／refresh模式要求配置已有有效固定日期边界；缺失时在行情缓存读取或抓取前退出2。
 """
 import argparse
+import copy
 import os
-import shutil
 import sys
 import tempfile
 import time
@@ -64,8 +67,33 @@ def check_run_wiring() -> list:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--refresh", action="store_true", help="重新抓取 K 线")
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--refresh", action="store_true", help="重新抓取 K 线")
+    mode.add_argument("--synthetic", action="store_true", help="纯构造行情，不读真实行情缓存或联网")
     args = ap.parse_args()
+
+    import run as R  # noqa: E402
+    from temporal_validation import configured_boundaries
+
+    params, cfg = R.load_configs()
+    if args.synthetic:
+        params, cfg = copy.deepcopy(params), copy.deepcopy(cfg)
+        params["score_threshold"] = 0.0
+        cfg["temporal_validation"] = {
+            "validation_start": "2026-03-16",
+            "test_start": "2026-06-29",
+            "test_end": "2026-09-18",
+        }
+        cfg["model_select"] = {
+            **(cfg.get("model_select") or {}),
+            "shorts": {"hold_days": [3, 5, 8], "stop_loss": [-0.05, None],
+                       "take_profit": [0.08, None]},
+        }
+    boundaries = configured_boundaries(cfg)
+    if boundaries is None:
+        print("不可验证：缺少有效且已结束的固定验证／测试日期边界；"
+              "尚未读取行情缓存或联网。可用 --synthetic 验证缓存机制。")
+        return 2
 
     print("=== 路由检查：run.py 是否对三个重阶段都启用了缓存 ===")
     unwired = check_run_wiring()
@@ -77,18 +105,9 @@ def main():
     import exit_model as em  # noqa: E402
     import model_select as msel  # noqa: E402
     import phase_cache as pc  # noqa: E402
-    import run as R  # noqa: E402
-
-    kmap = oe.build_kline_map(refresh=args.refresh)
+    kmap = oe.synthetic_kline_map() if args.synthetic else oe.build_kline_map(refresh=args.refresh)
     if not kmap:
         raise SystemExit("K 线缓存为空，先跑一次 tests/offline_e2e.py 或加 --refresh")
-    params, cfg = R.load_configs()
-
-    tmp = tempfile.mkdtemp(prefix="qt_phasecache_")
-    old_dir, old_log = pc.CACHE_DIR, R.log
-    pc.CACHE_DIR = tmp
-    hits = []
-    R.log = lambda m: hits.append(str(m)) if "命中缓存" in str(m) else None
 
     ecfg = cfg.get("exit_model", {}) or {}
     mcfg = cfg.get("model_select", {}) or {}
@@ -97,55 +116,67 @@ def main():
             "min_bucket_n": int(ecfg.get("min_bucket_n", 20)),
             "oos_frac": float(ecfg.get("oos_frac", 0.3)),
             "shrink_k": float(ecfg.get("shrink_k", 25)),
+            "temporal_validation": cfg.get("temporal_validation"),
         }, lambda: em.fit_exit_model(
             kmap, params,
             min_bucket_n=int(ecfg.get("min_bucket_n", 20)),
             oos_frac=float(ecfg.get("oos_frac", 0.3)),
-            shrink_k=float(ecfg.get("shrink_k", 25)))),
+            shrink_k=float(ecfg.get("shrink_k", 25)), boundaries=boundaries)),
         ("param_scan", {}, lambda: em.parameter_scan(kmap, params)),
-        ("select_short", {"grid": mcfg.get("shorts")},
+        ("select_short", {"grid": mcfg.get("shorts"),
+                          "temporal_validation": cfg.get("temporal_validation")},
          lambda: msel.select_short(cfg, params, kmap)),
     ]
 
     sig = pc.kline_signature(kmap)
-    print(f"K 线缓存 {len(kmap)} 只标的，内容签名 {sig}")
+    print(f"{'构造行情' if args.synthetic else 'K 线缓存'} {len(kmap)} 只标的，内容签名 {sig}")
     print(f"参数字典版本 {params.get('version')}\n")
 
     failures = []
-    print(f"{'阶段':<14}{'fresh(s)':>10}{'prime(s)':>10}{'hit(s)':>9}"
-          f"{'加速比':>8}   一致性")
-    for name, extra, fn in phases:
-        r_fresh, t_fresh = _elapsed(
-            lambda: R.cached_phase(name, fn, sig, params, extra, no_cache=True))
-        r_prime, t_prime = _elapsed(
-            lambda: R.cached_phase(name, fn, sig, params, extra))
-        hits.clear()
-        r_hit, t_hit = _elapsed(
-            lambda: R.cached_phase(name, fn, sig, params, extra))
+    with tempfile.TemporaryDirectory(prefix="qt_phasecache_") as tmp:
+        old_dir, old_log = pc.CACHE_DIR, R.log
+        pc.CACHE_DIR = tmp
+        hits = []
+        R.log = lambda m: hits.append(str(m)) if "命中缓存" in str(m) else None
+        try:
+            print(f"{'阶段':<14}{'fresh(s)':>10}{'prime(s)':>10}{'hit(s)':>9}"
+                  f"{'加速比':>8}   一致性")
+            for name, extra, fn in phases:
+                calls = []
 
-        a, b, c = (pc._sanitize(x) for x in (r_fresh, r_prime, r_hit))
-        ok = (a == b == c)
-        speed = (t_prime / t_hit) if t_hit > 1e-6 else float("inf")
-        print(f"{name:<14}{t_fresh:>10.1f}{t_prime:>10.1f}{t_hit:>9.2f}"
-              f"{speed:>7.0f}x   {'✅ 一致' if ok else '❌ 不一致'}")
-        if not ok:
-            failures.append(name)
-            # 定位第一处差异，便于排查
-            if isinstance(a, dict) and isinstance(c, dict):
-                for k in sorted(set(a) | set(c)):
-                    if a.get(k) != c.get(k):
-                        print(f"    首个差异键 {k!r}:\n      fresh={a.get(k)!r}\n      hit  ={c.get(k)!r}")
-                        break
-            else:
-                print(f"    fresh={a!r}\n    hit  ={c!r}")
-        if not hits:
-            failures.append(f"{name} 未命中缓存")
-            print(f"    ⚠ 第三次调用没有产生「命中缓存」日志，说明 key 不稳定")
+                def compute():
+                    calls.append(name)
+                    return fn()
 
-    pc.CACHE_DIR = old_dir
-    R.log = old_log
-    n_files = len([f for f in os.listdir(tmp) if f.endswith(".json")])
-    shutil.rmtree(tmp, ignore_errors=True)
+                r_fresh, t_fresh = _elapsed(
+                    lambda: R.cached_phase(name, compute, sig, params, extra, no_cache=True))
+                r_prime, t_prime = _elapsed(
+                    lambda: R.cached_phase(name, compute, sig, params, extra))
+                hits.clear()
+                r_hit, t_hit = _elapsed(
+                    lambda: R.cached_phase(name, compute, sig, params, extra))
+
+                a, b, c = (pc._sanitize(x) for x in (r_fresh, r_prime, r_hit))
+                ok = a is not None and a == b == c
+                speed = (t_prime / t_hit) if t_hit > 1e-6 else float("inf")
+                print(f"{name:<14}{t_fresh:>10.1f}{t_prime:>10.1f}{t_hit:>9.2f}"
+                      f"{speed:>7.0f}x   {'✅ 一致' if ok else '❌ 不一致或无结果'}")
+                if not ok:
+                    failures.append(name)
+                    if isinstance(a, dict) and isinstance(c, dict):
+                        for key in sorted(set(a) | set(c)):
+                            if a.get(key) != c.get(key):
+                                print(f"    首个差异键 {key!r}:\n      fresh={a.get(key)!r}\n      hit  ={c.get(key)!r}")
+                                break
+                    else:
+                        print(f"    fresh={a!r}\n    hit  ={c!r}")
+                if not hits or len(calls) != 2:
+                    failures.append(f"{name} 未命中缓存或重复计算")
+                    print("    ⚠ 第三次调用未命中缓存，或实际计算次数不为2")
+            n_files = len([f for f in os.listdir(tmp) if f.endswith(".json")])
+        finally:
+            pc.CACHE_DIR = old_dir
+            R.log = old_log
 
     print(f"\n缓存文件 {n_files} 个（3 个阶段各 1 个）")
     if failures:

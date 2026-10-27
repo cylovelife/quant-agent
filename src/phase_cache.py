@@ -41,7 +41,10 @@ CACHE_DIR = os.path.join(ROOT, "state", "cache", "phases")
 # 缓存格式版本：缓存结构或语义有变时递增，让旧缓存自动失效。
 # 1 → 2：model_select 的 avg_per_day 取消四舍五入（选型决策量精度修正），
 #         旧缓存里的值是舍入后的，与新语义不一致，必须作废。
-FORMAT = 2
+# 2 → 3：RSI 零损失且正上涨时由50修正为100，依赖评分的模型/选型需重算。
+# 3 → 4：按日期切分与实际标签结束时点清除跨界样本，旧评测缓存不可复用。
+# 4 → 5：绑定指标配置；离场阈值执行、初始回撤和完整基准持有期修正。
+FORMAT = 5
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +96,7 @@ def params_signature(params: dict, extra: dict) -> str:
     payload = {
         "format": FORMAT,
         "weights": params.get("weights"),
+        "indicators": params.get("indicators"),
         "score_threshold": params.get("score_threshold"),
         "backtest": params.get("backtest"),
         "extra": extra,
@@ -121,7 +125,7 @@ def _sanitize(o):
     if isinstance(o, (np.integer,)):
         return int(o)
     if isinstance(o, (np.floating,)):
-        return float(o)
+        return _sanitize(float(o))
     if isinstance(o, np.bool_):
         return bool(o)
     if isinstance(o, np.ndarray):
@@ -159,12 +163,12 @@ def save(phase: str, key: str, obj) -> bool:
     try:
         payload = {"format": FORMAT, "phase": phase, "key": key,
                    "data": _sanitize(obj)}
-        json.dumps(payload)          # 先校验可序列化，再落盘
+        json.dumps(payload, allow_nan=False)  # 先校验可序列化，再落盘
         os.makedirs(CACHE_DIR, exist_ok=True)
         p = path_for(phase, key)
         tmp = p + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False)
+            json.dump(payload, f, ensure_ascii=False, allow_nan=False)
         os.replace(tmp, p)
         return True
     except Exception:

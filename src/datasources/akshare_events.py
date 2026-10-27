@@ -246,11 +246,8 @@ def normalize_margin(df, exchange: str, trade_date: str):
         src_dates = sorted(set(out["trade_date"].dropna()))
         anom["date_from_source"] = src_dates[-1] if src_dates else None
         anom["date_mismatch"] = bool(src_dates and trade_date not in src_dates)
-        if anom["date_mismatch"]:
-            # 以上游给的日期为准：把 trade_date 换成实际日期，否则库里会多出
-            # 一天「我们以为存在、其实没有任何行情」的数据。
-            out = out.copy()
-            out["trade_date"] = anom["date_from_source"]
+        # Every source row already carries its actual date. A multi-date response
+        # must not collapse earlier observations onto the latest source date.
     elif exchange != "sse" and len(out):
         out = out.copy()
         out["trade_date"] = trade_date

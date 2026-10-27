@@ -6,10 +6,8 @@
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
 import sys
-import tempfile
 from contextlib import closing
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -19,14 +17,17 @@ import numpy as np
 import pandas as pd
 
 from data_snapshot import (
+    atomic_json as _atomic_json,
     Frames,
     canonical_json,
     digest,
     publish_snapshot,
     read_snapshot,
+    price_dataset_id,
 )
+from data_quality import assess_bars, build_data_contract
 from factor_eval import rolling_factor_ic
-from local_data import LocalData, PRICE_FIELDS, iso_date
+from local_data import LocalData, iso_date
 from research_report import (
     build_observations,
     build_research_summary,
@@ -70,16 +71,8 @@ def _quality(frames: Frames, asof: str, max_age_days: int) -> tuple[dict, dict]:
         if bars.empty:
             quality["missing"].append(key)
             continue
-        prices = bars[list(PRICE_FIELDS)].apply(pd.to_numeric, errors="coerce")
-        volumes = bars[["volume", "amount"]].apply(pd.to_numeric, errors="coerce")
-        bad = (
-            not np.isfinite(prices.to_numpy()).all()
-            or (prices <= 0).any().any()
-            or not np.isfinite(volumes.to_numpy()).all()
-            or (volumes < 0).any().any()
-            or (prices["high"] < prices[["open", "close", "low"]].max(axis=1)).any()
-            or (prices["low"] > prices[["open", "close", "high"]].min(axis=1)).any()
-        )
+        checked = assess_bars(bars, asof, max_age_days, require_current=False)
+        bad = any(issue != "stale" for issue in checked["issues"])
         last = bars["date"].max().date()
         quality["last_dates"][key] = last.isoformat()
         if bad:
@@ -98,18 +91,6 @@ def _quality(frames: Frames, asof: str, max_age_days: int) -> tuple[dict, dict]:
             if m == market and quality["last_dates"][f"{m}:{c}"] < latest
         )
     return quality, valid
-
-
-def _atomic_json(path: Path, value: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(prefix=".research-", dir=path.parent)
-    try:
-        with os.fdopen(fd, "wb") as stream:
-            stream.write(canonical_json(value))
-        os.replace(temporary, path)
-    finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
 
 
 def research_daily(
@@ -145,7 +126,10 @@ def research_daily(
     snapshot = publish_snapshot(frames, output / "snapshots")
     frozen = read_snapshot(snapshot)
     quality, valid = _quality(frozen, asof, max_age_days)
-    dataset_id = snapshot.name
+    dataset_id = price_dataset_id(frozen)
+    data_contract = build_data_contract(frozen, universe, asof, max_age_days)
+    data_contract.update(snapshot_id=snapshot.name, snapshot_path=str(snapshot), price_dataset_id=dataset_id)
+    data_contract["universe_observation"] = {"kind": "caller_configured"}
     params_id = digest(canonical_json(params))
     code_id = code_signature()
     universe_id = digest(
@@ -160,7 +144,7 @@ def research_daily(
     run_id = digest(
         canonical_json(
             [
-                dataset_id,
+                snapshot.name,
                 params_id,
                 code_id,
                 max_age_days,
@@ -199,7 +183,7 @@ def research_daily(
                 else "data_blocked"
             )
             previous = conn.execute(
-                "SELECT dataset_id,params_id,code_id,data_date FROM research_runs "
+                "SELECT dataset_id,params_id,code_id,data_date,payload FROM research_runs "
                 "WHERE universe_id=? ORDER BY id DESC LIMIT 1",
                 (universe_id,),
             ).fetchone()
@@ -223,13 +207,17 @@ def research_daily(
                     quality["regressed"] = [data_date]
                     status = "data_blocked"
                 elif dataset_id != previous[0]:
-                    change = "historical_revision"
+                    change = "historical_revision" if json.loads(previous[4]).get("snapshot_id") else "data_contract_upgrade"
+                elif snapshot.name != json.loads(previous[4]).get("snapshot_id"):
+                    change = "provenance_update"
                 else:
                     change = "evaluation_change"
             record = {
-                "format": 5,
+                "format": 6,
                 "run_id": run_id,
                 "dataset_id": dataset_id,
+                "snapshot_id": snapshot.name,
+                "data_contract": data_contract,
                 "params_id": params_id,
                 "parameters": params,
                 "instrument_metadata": instrument_metadata,
@@ -281,6 +269,7 @@ def research_daily(
         checked_at=created,
         checked_asof=asof,
         quality=quality,
+        data_contract=data_contract,
         status=status,
         daily_report_path=str(day_report),
         daily_details_path=str(day_details),

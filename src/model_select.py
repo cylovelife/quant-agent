@@ -9,17 +9,9 @@
 - 长期轨：六维权重方案。`value_track.historical_replay` 已产出无前视的
   五维分数面板，任何权重方案都能在这个面板上直接算 IC。
 
-核心方法：**锚定式 walk-forward**（anchored walk-forward）
-  对每个切分点 s：用 [0, s) 选优 → 用 [s, end) 验证。
-  多个切分点重复，最后比较：
-    ① 样本内选出的配置，在样本外的表现；
-    ② 生产配置在同期样本外的表现。
-  若 ① 长期稳定优于 ②，才说明「调参」本身有增量价值；否则调参只是拟合噪声。
-
-这条纪律直接来自本项目已踩过的坑：`update_weights` 用个股级名义样本量算 t 值，
-忽略了同一天标的之间的高度相关（实测 ICC=0.39，有效样本量只有名义的 1/13），
-把噪声判成显著。所以这里所有选型结论都要求**样本外**支持，并且把样本外
-是否支持写进结论文本，不支持的就说「维持现配置」。
+日期分组并依据实际标签结束日清除跨界：训练段形成候选，验证段选择，
+固定的已结束测试段只比较选中候选与基准。结果仅供研究观察，不自动调参。
+测试时间边界由调用方明确提供；跨试验封存与搜索记录属于后续任务。
 """
 import json
 import os
@@ -31,6 +23,7 @@ import pandas as pd
 import exit_model as em
 import value_strategy as vs
 import value_track as vt
+from trade_semantics import LabelSpec
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STATE = os.path.join(ROOT, "state")
@@ -99,115 +92,62 @@ def _rule_stats(sigs, horizon, stop, take) -> dict:
 
 def select_short(cfg: dict, params: dict, kline_map: dict,
                  splits=(0.55, 0.68, 0.80)) -> dict | None:
-    """锚定式 walk-forward 选离场规则组合。"""
+    """Select on earlier dates and report a single disjoint, purged test block."""
+    from temporal_validation import configured_boundaries, split_three_way, truncate_klines
+
+    if tuple(splits) != (0.55, 0.68, 0.80):
+        raise ValueError("legacy overlapping split fractions are unsupported; provide date boundaries")
+    boundaries = configured_boundaries(cfg)
+    if boundaries is None:
+        return None
+
     grid = short_grid(cfg)
-    max_h = max(g["hold_days"] for g in grid)
-    sigs = em._collect_signals(kline_map, params, max_h, with_date=True)
-    if len(sigs) < 200:
+    if not grid:
         return None
-    sigs.sort(key=lambda s: s[0])
-    bt = params.get("backtest", {})
-    cur = {"hold_days": int(bt.get("hold_days", 5)),
-           "stop_loss": float(bt.get("stop_loss", -0.05)),
-           "take_profit": float(bt.get("take_profit", 0.08))}
-
-    folds, picked_stats, base_stats, is_best_stats = [], [], [], []
-    for frac in splits:
-        cut = int(len(sigs) * frac)
-        is_set, oos_set = sigs[:cut], sigs[cut:]
-        if len(oos_set) < 60:
-            continue
-        # 样本内选优：以**日均**收益为主（并列时比日均 Sharpe）。
-        # 用日均而不是原始均值，是因为网格里持有期不同（3/5/8 日），
-        # 原始均值会把「持有更久」本身算成优势。
-        best, best_key = None, None
-        for g in grid:
-            st = _rule_stats(is_set, g["hold_days"], g["stop_loss"], g["take_profit"])
-            if st.get("n", 0) < 50:
-                continue
-            key = (st["avg_per_day"], st.get("sharpe_per_day") or -9)
-            if best_key is None or key > best_key:
-                best, best_key = {**g, **st}, key
-        if not best:
-            continue
-        oos_pick = _rule_stats(oos_set, best["hold_days"], best["stop_loss"],
-                               best["take_profit"])
-        oos_cur = _rule_stats(oos_set, cur["hold_days"], cur["stop_loss"],
-                              cur["take_profit"])
-        is_cur = _rule_stats(is_set, cur["hold_days"], cur["stop_loss"],
-                             cur["take_profit"])
-        folds.append({
-            "split": frac, "n_is": len(is_set), "n_oos": len(oos_set),
-            "picked": {k: best.get(k) for k in ("hold_days", "stop_loss",
-                                                "take_profit")},
-            "is_picked": {"avg": best["avg"], "sharpe": best.get("sharpe"),
-                          "avg_per_day": best.get("avg_per_day"), "n": best["n"]},
-            "is_current": {"avg": is_cur.get("avg"), "sharpe": is_cur.get("sharpe"),
-                           "avg_per_day": is_cur.get("avg_per_day")},
-            "oos_picked": {"avg": oos_pick.get("avg"), "sharpe": oos_pick.get("sharpe"),
-                           "avg_per_day": oos_pick.get("avg_per_day"),
-                           "avg_days": oos_pick.get("avg_days"),
-                           "win": oos_pick.get("win"), "p05": oos_pick.get("p05")},
-            "oos_current": {"avg": oos_cur.get("avg"), "sharpe": oos_cur.get("sharpe"),
-                            "avg_per_day": oos_cur.get("avg_per_day"),
-                            "avg_days": oos_cur.get("avg_days"),
-                            "win": oos_cur.get("win"), "p05": oos_cur.get("p05")},
-        })
-        picked_stats.append(oos_pick.get("avg_per_day", 0.0))
-        base_stats.append(oos_cur.get("avg_per_day", 0.0))
-        is_best_stats.append(best.get("avg_per_day", 0.0))
-    if not folds:
+    current = LabelSpec.from_params(params).to_dict()
+    limited = truncate_klines(kline_map, boundaries["test_end"])
+    max_horizon = max(current["hold_days"], max(g["hold_days"] for g in grid))
+    sigs = em._collect_signals(limited, params, max_horizon, with_date=True)
+    if len(sigs) < 200 or any(len(item) != 4 for item in sigs):
         return None
-
-    # 诊断：样本内的「最优」有多少是真本事（IS 优势能否延续到 OOS）。
-    # 口径统一为**日均收益**（pct/日），跨持有期可比。
-    gain_is = float(np.mean(is_best_stats)) - float(np.mean(
-        [f["is_current"]["avg_per_day"] or 0.0 for f in folds]))
-    gain_oos = float(np.mean(picked_stats)) - float(np.mean(base_stats))
-    decay = (1 - gain_oos / gain_is) if abs(gain_is) > 1e-6 else None
-
-    # 全样本上再扫一遍，作为「当期建议参数」
-    full = []
-    for g in grid:
-        st = _rule_stats(sigs, g["hold_days"], g["stop_loss"], g["take_profit"])
-        if st.get("n", 0) >= 50:
-            full.append({**g, **st})
-    full.sort(key=lambda x: (x["avg_per_day"], x.get("sharpe_per_day") or -9),
-              reverse=True)
-    recommend = full[0] if full else None
-    cur_full = next((f for f in full
-                     if f["hold_days"] == cur["hold_days"]
-                     and f["stop_loss"] == cur["stop_loss"]
-                     and f["take_profit"] == cur["take_profit"]), None)
-
-    verdict, switch = _short_verdict(folds, gain_is, gain_oos, decay, recommend, cur_full)
-    _keys = ("avg", "avg_per_day", "avg_days", "win", "p05", "sharpe",
-             "sharpe_per_day", "n")
-    return {
-        "n_signals": len(sigs),
-        "current": cur,
-        "recommend": ({k: recommend.get(k) for k in
-                       ("hold_days", "stop_loss", "take_profit")} if recommend else None),
-        "recommend_stats": ({k: recommend.get(k) for k in _keys}
-                            if recommend else None),
-        "current_stats": ({k: cur_full.get(k) for k in _keys}
-                          if cur_full else None),
-        "folds": folds,
-        # 增量统一为**日均收益差（pct/日）**，跨持有期可比。
-        "gain_unit": "pct/day",
-        # 精度必须高于展示精度（pct 保留 4 位小数 = 收益 1e-6）。早期取 5 位小数，
-        # 结果同一个量在报告的诊断行显示 -0.0280、在结论句里显示 -0.0275——
-        # 不是两个算法，是量化误差。存 8 位，展示统一走 `+.4f` pct。
-        "gain_in_sample": round(gain_is, 8),
-        "gain_out_sample": round(gain_oos, 8),
-        "decay": (round(decay, 3) if decay is not None else None),
-        "verdict": verdict,
-        "switch_recommended": switch,
-        "grid_top10": [{k: r.get(k) for k in ("hold_days", "stop_loss", "take_profit",
-                                              "avg", "avg_per_day", "avg_days",
-                                              "win", "sharpe", "sharpe_per_day", "n")}
-                       for r in full[:10]],
-    }
+    frame = pd.DataFrame({"date": [s[0] for s in sigs],
+                          "end": [s[3] for s in sigs], "signal": sigs})
+    try:
+        parts = split_three_way(frame, date_col="date", end_col="end", **boundaries)
+    except ValueError:
+        return None
+    training = parts.train["signal"].tolist()
+    validation = parts.validation["signal"].tolist()
+    test = parts.test["signal"].tolist()
+    if len(training) < 50 or len(validation) < 20 or len(test) < 20:
+        return None
+    ranked = []
+    for candidate in grid:
+        train = _rule_stats(training, candidate["hold_days"], candidate["stop_loss"], candidate["take_profit"])
+        validate = _rule_stats(validation, candidate["hold_days"], candidate["stop_loss"], candidate["take_profit"])
+        if train.get("n", 0) >= 50 and validate.get("n", 0) >= 20:
+            ranked.append({**candidate, "train": train, "validation": validate})
+    if not ranked:
+        return None
+    ranked.sort(key=lambda x: (x["validation"]["avg_per_day"], x["validation"].get("sharpe_per_day") or -9), reverse=True)
+    winner = ranked[0]
+    chosen = {k: winner[k] for k in ("hold_days", "stop_loss", "take_profit")}
+    picked = _rule_stats(test, chosen["hold_days"], chosen["stop_loss"], chosen["take_profit"])
+    base = _rule_stats(test, current["hold_days"], current["stop_loss"], current["take_profit"])
+    train_base = _rule_stats(training, current["hold_days"], current["stop_loss"], current["take_profit"])
+    gain_is = winner["train"]["avg_per_day"] - train_base["avg_per_day"]
+    gain_test = picked["avg_per_day"] - base["avg_per_day"]
+    fold = {"split": "sealed_test", "n_is": len(training), "n_validation": len(validation),
+            "n_oos": len(test), "picked": chosen, "is_picked": winner["train"],
+            "is_current": train_base, "oos_picked": picked, "oos_current": base,
+            "validation_start": parts.validation_start, "test_start": parts.test_start}
+    return {"n_signals": len(sigs), "current": current, "recommend": chosen,
+            "recommend_stats": winner["validation"], "current_stats": _rule_stats(validation, current["hold_days"], current["stop_loss"], current["take_profit"]),
+            "folds": [fold], "gain_unit": "pct/day", "gain_in_sample": round(gain_is, 8),
+            "gain_out_sample": round(gain_test, 8), "decay": None,
+            "verdict": "日期分组并清除跨界标签；验证集选择的候选仅观察，封存测试不直接用于调权。",
+            "switch_recommended": False, "grid_top10": [{**{k: r[k] for k in ("hold_days", "stop_loss", "take_profit")}, **r["validation"]} for r in ranked[:10]],
+            "split_protocol": "date_grouped_label_end_purged_v1"}
 
 
 def _short_verdict(folds, gain_is, gain_oos, decay, recommend, cur_full):
@@ -244,7 +184,7 @@ def _short_verdict(folds, gain_is, gain_oos, decay, recommend, cur_full):
 # ---------------------------------------------------------------------------
 # 长期：六维权重方案对比（在无前视面板上算 IC）
 # ---------------------------------------------------------------------------
-def select_long(panel: pd.DataFrame, cfg: dict,
+def _select_long_descriptive(panel: pd.DataFrame, cfg: dict,
                 milestones=(20, 60, 120)) -> dict | None:
     """在历史回放面板上比较各权重方案。panel 来自 value_track.historical_replay。"""
     if panel is None or len(panel) < 60:
@@ -303,6 +243,46 @@ def select_long(panel: pd.DataFrame, cfg: dict,
             "best_milestones": ({str(k): v for k, v in best["milestones"].items()}),
             "gain_ic": round(best["ic_avg"] - (cur["ic_avg"] if cur else 0.0), 4),
             "verdict": verdict, "switch_recommended": switch}
+
+
+def select_long(panel: pd.DataFrame, cfg: dict, milestones=(20, 60, 120)) -> dict | None:
+    """Select weights on validation dates; inspect the sealed test once."""
+    from temporal_validation import configured_boundaries, split_three_way
+    boundaries = configured_boundaries(cfg)
+    if boundaries is None:
+        return None
+    if panel is None or panel.empty:
+        return None
+    ends = [f"label_end_ret_{n}" for n in milestones]
+    if any(col not in panel for col in ends):
+        return None
+    work = panel.copy()
+    parsed = work[ends].apply(pd.to_datetime, errors="coerce")
+    work["_latest_label_end"] = parsed.max(axis=1).where(parsed.notna().all(axis=1))
+    try:
+        parts = split_three_way(work, date_col="date", end_col="_latest_label_end", **boundaries)
+    except ValueError:
+        return None
+    if len(parts.train) < 30 or len(parts.validation) < 30 or len(parts.test) < 30:
+        return None
+    selected = _select_long_descriptive(parts.validation, cfg, milestones)
+    if not selected:
+        return None
+    def score_test(name):
+        weights = LONG_SCHEMES[name]
+        usable = {f"v_{k}": float(weights[k]) for k in CORE_ONLY if f"v_{k}" in parts.test and weights.get(k, 0) > 0}
+        total = sum(usable.values())
+        if not total:
+            return {}
+        score = sum(pd.to_numeric(parts.test[k], errors="coerce").fillna(50) * weight for k, weight in usable.items()) / total
+        frame = parts.test.assign(_wscore=score)
+        return {str(n): vt.cross_section_ic(frame.dropna(subset=[f"ret_{n}"] + list(usable)), ["_wscore"], f"ret_{n}")
+                for n in milestones if f"ret_{n}" in frame}
+    selected.update(test_metrics={"selected": score_test(selected["best"]), "current": score_test("default")},
+                    validation_start=parts.validation_start, test_start=parts.test_start,
+                    split_protocol="date_grouped_label_end_purged_v1", switch_recommended=False,
+                    verdict="验证集选出的权重仅作观察；封存测试不直接触发参数更新。")
+    return selected
 
 
 def _long_verdict(best, cur):

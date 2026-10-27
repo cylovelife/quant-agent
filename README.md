@@ -1,15 +1,31 @@
 # quant-agent — 双轨投资助手（短线低吸 + 长期价值）
 
-跨市场（A股 / 港股 / 美股 / 场内ETF / 场外基金）的投资筛选 Agent，**不是一次写完就稳定的代码，而是每天拿次日实盘数据自我校验、持续修正的迭代系统**。
+跨市场（A股 / 港股 / 美股 / 场内ETF / 场外基金）的投资筛选 Agent，通过事前留档、冻结规则与后续行情核对持续修正研究结论。
+
+当前建设主线是[给定本金的虚拟投资账户](docs/research/paper_account_validation.md)：
+从预设现金出发，以后续行情模拟策略交易，验证现金、持仓、费用及每日净值的变化。
+无需真实资金或券商持仓；虚拟启动本金已确定为人民币五万元，账户尚未启动。账户核算和前瞻试验入口已完成构造验证，真实数据来源仍待核验。
 
 两条互相独立的轨道，共用同一套行情抓取与缓存：
 
 | 轨道 | 回答的问题 | 持有周期 | 验证节奏 | 主要依据 |
 |---|---|---|---|---|
-| **短线轨** `short` | 明天买什么、明天卖什么 | 3~8 个交易日 | 次日即可验证 | 价格位置、量能、离场期望值 |
+| **短线轨** `short` | 短线观察、模拟与离场研究 | 3~8 个交易日 | 等冻结规则的收益标签成熟 | 价格位置、量能、离场期望值 |
 | **长期轨** `long` | 现在值得长期拿什么 | 数月至数年 | 5/20/60/120/250 交易日 | 宏观、公司质量、估值、行业 |
 
 > ⚠️ 仅供研究学习，不构成投资建议。历史回测不代表未来，短线低吸存在接飞刀风险，请控制仓位、独立决策。
+
+短线新信号使用 [统一日线标签契约](docs/research/trade_semantics.md)：信号收盘后登记为待入场，
+次根完整日线开盘入场，按冻结的持有期／止盈止损在收盘结束；未成熟收益不计复盘。
+新记录使用 `picks_v2_*.json`、`outcomes_v2.csv`、`trades_v2.csv`，旧记录保留并隔离。
+首期新合约覆盖A股／场内ETF；海外与场外基金保留观察入口，尚未接入此成交合约。
+上述v2记录仍是未扣费的研究标签。另有[单笔虚拟订单模拟](docs/research/order_execution.md)：
+`python run.py --simulate-order REQUEST_JSON`只读本地raw行情，返回费用、数量与现金变动提案；
+不写账本、不初始化账户。另有[现金与数量事件账本](docs/research/paper_ledger.md)：
+`--record-order REQUEST_JSON`向指定的既有虚拟账户记账，`--ledger-status REQUEST_JSON`只读对账。
+[公司行动与外部资金流](docs/research/corporate_actions.md)通过 `--record-action REQUEST_JSON` 显式登记；
+旧版账本通过 `--migrate-ledger-copy REQUEST_JSON` 在新副本升级。公司行动覆盖尚未核实，
+价格变化不能当成账户总回报。普通跑盘仍维护研究标签；[虚拟账户初始化](docs/research/paper_account_initialization.md)通过 `--init-account REQUEST_JSON` 显式执行；[逐日结算与资金曲线](docs/research/paper_daily_settlement.md)通过 `--settle-paper-days`、`--paper-curve` 显式执行；日历和公司行动覆盖尚需核验。 [时间切分及标签成熟规则](docs/research/temporal_validation.md)需要事前指定已结束的固定日期边界；未配置时相关选型与离场模型验证保守跳过。 [前瞻试验与现金基准](docs/research/paper_experiment.md)提供显式冻结与成对结算入口；尚未启动实际前瞻账户。
 
 ---
 
@@ -368,8 +384,9 @@ ROE/股息率）与成立日逐一相同，只有 `change1Year`（20.61% vs 20.2
    t 值虚高）。
 2. **失败不伪装**。写入返回**实际写入行数**，失败返回 0；数据层不可用时所有 API 退化成
    安全值（读 `None`、写 `0`），主流程继续走文件缓存，绝不把异常抛进业务链路。
-3. **不替代原有产物**。`state/picks_*.json`、`outcomes.csv`、`positions.json` 照旧写，
-   数据库是**新增**的结构化副本。
+3. **不替代文件留档**。新短线信号／收益使用 `state/picks_v2_*.json`、`outcomes_v2.csv`，
+   账本保留 `positions.json`，新平仓写入 `trades_v2.csv`；旧版本文件保留。
+   数据库仍是新增的结构化副本。
 
 **什么该入库、什么继续留在文件缓存**——判据是「丢了能不能再拿回来」：
 

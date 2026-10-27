@@ -279,6 +279,13 @@ def render_report(record: dict) -> str:
     ]
     if record["status"] == "data_blocked":
         lines += ["**数据校验未通过，本次不生成优先关注清单。**", ""]
+    contract = record.get("data_contract")
+    if contract:
+        admitted = sum(item.get("new_signal_allowed", False) for item in contract["series"].values())
+        lines += [f"数据契约：{admitted} 个已加载标的满足本次新增模拟信号的数据条件；"
+                  "其余只保留历史观察或待核验状态。",
+                  "抓取来源与时间随冻结快照留档；发布时间、历史成分／退市／停牌覆盖不完整，"
+                  "快照完整性通过不等于完整历史当时可见数据。", ""]
     for market, label in (("etf", "ETF优先关注"), ("cn", "股票优先关注")):
         lines += [
             f"### {label}",

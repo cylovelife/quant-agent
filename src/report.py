@@ -4,6 +4,7 @@ import os
 from datetime import datetime
 
 import pandas as pd
+from trade_semantics import LABEL_VERSION
 
 import exit_model
 import store
@@ -100,10 +101,10 @@ def eval_md(ev: dict) -> str:
     if "skipped" in ev:
         return f"（{ev['skipped']}）\n"
     if "avg_ret" not in ev:
-        return "（昨日推荐标的今日暂无可用行情）\n"
+        return "（暂无新增成熟信号收益）\n"
     lines = [
-        f"- 推荐日期：**{ev['picks_date']}**，共 {ev['count']} 只",
-        f"- 次日平均收益：**{_pct(ev['avg_ret'])}**，胜率：**{ev['win_rate'] * 100:.1f}%**",
+        f"- 本次结算成熟信号：共 {ev['count']} 条，最近信号日 **{ev['picks_date']}**",
+        f"- 冻结规则下的未扣费模拟收益：平均 **{_pct(ev['avg_ret'])}**，胜率：**{ev['win_rate'] * 100:.1f}%**",
         f"- 最佳：{ev['best']['name']}({ev['best']['code']}) {_pct(ev['best']['ret'])}；"
         f"最差：{ev['worst']['name']}({ev['worst']['code']}) {_pct(ev['worst']['ret'])}",
     ]
@@ -519,14 +520,31 @@ def book_overview_md(book: "dict | None", advice: "list | None") -> str:
     """持仓概览：未平仓数量、浮盈亏分布、已平仓历史统计。"""
     if book is None:
         return "（持仓账本未启用）\n"
-    opens = [p for p in book.get("positions", []) if p.get("status") == "open"]
-    closed = [p for p in book.get("positions", []) if p.get("status") == "closed"]
-    if not opens and not closed:
+    legacy = [p for p in book.get("positions", []) if p.get("label_version") != LABEL_VERSION]
+    opens = [p for p in book.get("positions", [])
+             if p.get("status") == "open" and p.get("verification_status") == "verified"]
+    closed = [p for p in book.get("positions", [])
+              if p.get("status") == "closed" and p.get("label_version") == LABEL_VERSION]
+    pending = sum(p.get("status") == "pending" for p in book.get("positions", []))
+    unverified = sum(p.get("verification_status") in ("legacy_unverified", "unavailable", "revised_history")
+                     for p in book.get("positions", []))
+    if not opens and not closed and not pending and not legacy and not unverified:
         return "- 账本为空（首次运行将从最近一次推荐回填）。\n"
     per = {}
     for p in opens:
         per.setdefault(p.get("market"), []).append(p)
     lines = []
+    if legacy:
+        lines.append(f"- 旧口径记录 **{len(legacy)}** 条，保留原状态与历史数值，不混入v2收益统计。")
+        for pos in legacy:
+            review = pos.get("legacy_risk_review") or {}
+            if review.get("trigger"):
+                lines.append(f"- {pos.get('name') or pos.get('code')}：旧口径{review['trigger']}，"
+                             f"报价相对原参考价 {_pct(review['reference_ret'])}，需复核；未记为新成交。")
+    if pending:
+        lines.append(f"- 待入场信号 **{pending}** 条，尚无确认的次日开盘成交，不计作持仓。")
+    if unverified:
+        lines.append(f"- **{unverified}** 条持仓记录口径未核验或行情不可用，保留原值，不据此生成新平仓。")
     if opens:
         rets = [float(p.get("ret") or 0.0) for p in opens]
         pos = sum(1 for r in rets if r > 0)
@@ -808,8 +826,8 @@ def longterm_track_md(lt: "dict | None") -> str:
     track = lt.get("track") or {}
     summ = track.get("summary") or {}
     if summ:
-        lines.append("**已到期里程碑的实际表现**（含基准超额）\n")
-        rows = ["| 里程碑 | 样本 | 平均收益 | 胜率 | 平均超额(vs 沪深300ETF) | 超额胜率 |",
+        lines.append("**已到期里程碑的价格变化**（含基准价格差；未核对分红和费用，非账户总回报）\n")
+        rows = ["| 里程碑 | 样本 | 平均价格变化 | 胜率 | 平均超额价格差(vs 沪深300ETF) | 超额胜率 |",
                 "|---|---|---|---|---|---|"]
         for n, d in sorted(summ.items(), key=lambda kv: int(kv[0])):
             rows.append(f"| {n} 个交易日 | {d['n']} | {_n(d['avg_ret'], 2, '%', plus=True)} | "
@@ -827,7 +845,7 @@ def longterm_track_md(lt: "dict | None") -> str:
 
     rep = lt.get("replay")
     if rep and rep.get("milestones"):
-        lines.append(f"\n**历史回放检验**（{rep.get('n_symbols')} 只 × "
+        lines.append(f"\n**历史回放检验**（未复权价格变化，非总回报；{rep.get('n_symbols')} 只 × "
                      f"{rep.get('n_periods')} 个截面 = {rep.get('n_obs')} 条观测，"
                      f"{rep.get('date_range', ['', ''])[0]} ~ "
                      f"{rep.get('date_range', ['', ''])[1]}）\n")
@@ -849,8 +867,9 @@ def longterm_track_md(lt: "dict | None") -> str:
             rows.append(f"| {n} 个交易日 | {d['ic_mean']:+.4f} | {d.get('icir')} | "
                         f"{t:+.2f} | {d['positive_rate']:.0%} | {verdict} |")
         lines.append("\n".join(rows))
-        lines.append("- 无前视保证：财务只用**公告日 ≤ 时点**的报告期（用 NOTICE_DATE，"
-                     "不是报告期截止日）；估值分位只用时点之前的**不复权**价；"
+        lines.append("- 日期筛选：财务只用**公告日早于信号日**的报告期；公告时刻未知时从次日可用，"
+                     "缺公告日或仅有法定截止日代理的记录不参与回放；这不构成完整历史版本无前视保证。"
+                     "估值分位只用时点之前的**不复权**价；"
                      "IC 先按交易日分组再算秩相关（不分组会把当日 beta 误当预测力）。"
                      "回放不含宏观维度，权重按比例分给其余五维。")
         best = max(((int(n), (h.get("factors") or {}).get("score") or {})
@@ -910,7 +929,7 @@ def _ml_verdict_line() -> str:
 def model_selection_md(sl: "dict | None") -> str:
     """短线模型选型（离场规则组合的 walk-forward 结论）。"""
     if not sl:
-        return "（未产出：历史信号样本不足）\n"
+        return "（未产出：未配置固定日期边界、标签结束日缺失或历史样本不足）\n"
     lines = []
     cur, rec = sl.get("current") or {}, sl.get("recommend") or {}
 
@@ -930,7 +949,7 @@ def model_selection_md(sl: "dict | None") -> str:
                 f"{_n(cs.get('avg_days'), 1, '日')} | "
                 f"{_n((cs.get('win') or 0) * 100, 1, '%')} | "
                 f"{_n((cs.get('p05') or 0) * 100, 2, '%')} | {_n(cs.get('sharpe'), 3)} |")
-    rows.append(f"| 全样本最优 | {_fmt_rule(rec)} | "
+    rows.append(f"| 验证集候选 | {_fmt_rule(rec)} | "
                 f"{_n((rs.get('avg') or 0) * 100, 3, '%', plus=True)} | "
                 f"**{_n((rs.get('avg_per_day') or 0) * 100, 4, '%', plus=True)}** | "
                 f"{_n(rs.get('avg_days'), 1, '日')} | "
@@ -939,8 +958,7 @@ def model_selection_md(sl: "dict | None") -> str:
     lines.append("\n".join(rows))
     lines.append("\n> 决策量是**日均收益**而非平均收益：网格里持有期不同（3/5/8 日），"
                  "持有更久的组合天然多吃几天市场漂移，用原始均值比会把「敞口更大」"
-                 "误当「策略更优」。同时设尾部守卫——建议参数若把 5% 分位明显拖深，"
-                 "一律维持现配置。")
+                 "误当「策略更优」。候选仅用于观察，当前不会自动切换配置。")
 
     folds = sl.get("folds") or []
     if folds:
@@ -949,7 +967,7 @@ def model_selection_md(sl: "dict | None") -> str:
         _decay = sl.get("decay")
         _decay_txt = (f"；样本内优势衰减 {_decay * 100:.0f}%"
                       if _decay is not None else "")
-        lines.append(f"\n**锚定式 walk-forward**（前段选优 → 后段验证{_decay_txt}）\n")
+        lines.append(f"\n**按日期分组**（训练 → 验证选型 → 固定测试{_decay_txt}）\n")
         rows = ["| 切分点 | 样本内选出 | 样本内增益 | 样本外增益 | 样本外：选优 / 当前（日均）|",
                 "|---|---|---|---|---|"]
         for f in folds:
@@ -960,7 +978,8 @@ def model_selection_md(sl: "dict | None") -> str:
             sl_ = f["picked"]["stop_loss"]
             rule = (f"持有{f['picked']['hold_days']}日/止损"
                     + ("不止损" if sl_ is None else f"{sl_ * 100:.0f}%"))
-            rows.append(f"| {f['split'] * 100:.0f}% | {rule} | {gs * 100:+.4f}pct/日 | "
+            split_label = f.get("test_start") or str(f["split"])
+            rows.append(f"| {split_label} | {rule} | {gs * 100:+.4f}pct/日 | "
                         f"{go * 100:+.4f}pct/日 | "
                         f"{(f['oos_picked'].get('avg_per_day') or 0) * 100:+.4f}% / "
                         f"{(f['oos_current'].get('avg_per_day') or 0) * 100:+.4f}% |")
@@ -997,9 +1016,23 @@ def data_health_md(health: "dict | None") -> str:
                and (v.get("missing") or 0) >= 3}
     fallbacks = health.get("_fallbacks") or []
     missing_src = health.get("_missing_sources") or []
-    if not tripped and not partial and not fallbacks and not missing_src:
+    contract = health.get("_data_contract") or {}
+    if not tripped and not partial and not fallbacks and not missing_src and not contract:
         return ""
     lines = ["> ⚠️ **本轮数据完整性提示**（缺口会直接影响结论，请先看这里）\n>"]
+    if contract:
+        checks = contract.get("series", {})
+        admitted = sum(bool(check.get("new_signal_allowed")) for check in checks.values())
+        lines.append(f"> - **新信号数据准入**：{admitted}/{len(checks)} 只具备条件；"
+                     f"记录 `{contract.get('record_id', '冻结失败')}`，快照 `{contract.get('snapshot_id', '无')}`。")
+        rejected = [(key, check) for key, check in checks.items() if check.get("issues")]
+        for key, check in rejected[:5]:
+            lines.append(f">   - {key}：{', '.join(check['issues'])}；暂停该标的新信号。")
+        if contract.get("error"):
+            lines.append(f">   - 冻结失败：{contract['error']}；保留原持仓，暂停价格结算和新增登记。")
+        lines.append("> - 已冻结本次观察到的来源、抓取时间、价格版本及标的池；"
+                     "完整历史时点数据尚不具备，历史成分、退市／停牌状态与准确发布时间覆盖未知。"
+                     "行情异常时保留已有持仓，未核验价格不用于补造收益。")
     for mkt, v in tripped.items():
         miss = v.get("missing") or 0
         lines.append(
@@ -1076,7 +1109,8 @@ def brief_action_rows(today_picks: dict, advice: "list | None",
                       per_market: int = BRIEF_BUY_PER_MARKET,
                       top_n: int = BRIEF_BUY_N,
                       sell_n: int = BRIEF_SELL_N,
-                      watch_n: int = BRIEF_WATCH_N) -> list:
+                      watch_n: int = BRIEF_WATCH_N,
+                      book: dict | None = None) -> list:
     """把「买什么 / 卖什么 / 盯什么」压成一张动作表。
 
     排序：买入按评分降序；卖出按继续持有期望 E 升序（最该先走的排最前）；
@@ -1089,6 +1123,8 @@ def brief_action_rows(today_picks: dict, advice: "list | None",
     skip = {(str(a.get("market")), str(a.get("code")))
             for a in (advice or [])
             if (a.get("days_held") or 0) > 0 or a.get("advice") == "SELL"}
+    skip.update((str(p.get("market")), str(p.get("code")))
+                for p in (book or {}).get("positions", []) if p.get("status") == "open")
     rows = []
     for mkt, r in _brief_buy_rows(today_picks, per_market, top_n):
         if (mkt, str(r.get("code"))) in skip:
@@ -1197,11 +1233,11 @@ def brief_longterm_md(lt: "dict | None", n_stocks: int = BRIEF_LT_STOCKS,
         for n, d in sorted(summ.items(), key=lambda kv: int(kv[0])):
             parts.append(f"{n}日 超额 {_n(d.get('avg_excess'), 2, '%', plus=True)}"
                          f"（胜率 {_n(d.get('excess_win'), 0, '%')}，{d.get('n')} 只）")
-        lines.append(f"- **超额收益**（减沪深300ETF）：{'；'.join(parts)}。")
+        lines.append(f"- **超额价格变化**（减沪深300ETF，未核对分红和费用，非总回报）：{'；'.join(parts)}。")
     else:
         tail = f"（已登记 {(lt.get('track') or {}).get('batches')} 批，自动结算里程碑）" \
             if (lt.get("track") or {}).get("batches") else ""
-        lines.append(f"- **超额收益**（减沪深300ETF）：尚无到期里程碑{tail}。")
+        lines.append(f"- **超额价格变化**（减沪深300ETF）：尚无到期里程碑{tail}。")
     rep = lt.get("replay") or {}
     d120 = ((rep.get("milestones") or {}).get("120") or {}).get("factors", {}).get("score")
     if d120 and d120.get("t") is not None:
@@ -1221,9 +1257,13 @@ def brief_md(today_picks: dict, ev: dict, iter_info: dict, params: dict,
     """
     md = []
     if run_short:
-        rows = brief_action_rows(today_picks, exit_advice_list)
+        rows = brief_action_rows(today_picks, exit_advice_list, book=book)
         md.append("\n## 今日操作清单\n")
         md.append(brief_action_md(rows))
+        unknown = [p for p in (book or {}).get("positions", [])
+                   if p.get("verification_status") in ("legacy_unverified", "unavailable", "revised_history")]
+        if unknown:
+            md.append(f"- {len(unknown)} 条持仓口径或行情待核验，保留原记录；风险复核明细见完整版账本。\n")
         if not any(r["act"] == "买入" for r in rows):
             md.append("- 今日无新增买入候选（高评分标的均已在持仓中），只执行下面的动作\n")
         md.append(
@@ -1232,7 +1272,7 @@ def brief_md(today_picks: dict, ev: dict, iter_info: dict, params: dict,
             "- 卖出/观察只对**已有持仓**生效；不在清单里的持仓按硬规则照常持有\n")
         if "avg_ret" in (ev or {}):
             md.append(
-                f"- 昨日推荐（{ev['picks_date']}，{ev['count']} 只）复盘：平均 "
+                f"- 本次成熟信号（最近信号日 {ev['picks_date']}，{ev['count']} 条）的未扣费模拟收益：平均 "
                 f"**{_pct(ev['avg_ret'])}**、胜率 **{ev['win_rate'] * 100:.1f}%**"
                 f"（最佳 {ev['best']['name']} {_pct(ev['best']['ret'])} / "
                 f"最差 {ev['worst']['name']} {_pct(ev['worst']['ret'])}）\n")
@@ -1364,7 +1404,7 @@ def generate_report(today_picks: dict, summary: dict, ev: dict,
         md.append(
             "\n**长期价值轨**\n\n"
             "- 只给「候选与依据」，不设虚拟持仓——长期仓位属你的资产配置决策。"
-            "看**超额收益**（减沪深300ETF），里程碑 5/20/60/120/250 个交易日\n"
+            "看**超额价格变化**（减沪深300ETF，非总回报），里程碑 5/20/60/120/250 个交易日\n"
             "- 口径：宏观 → 标的池 → 六维评分（质量/成长/现金流/财务安全/估值/宏观契合）"
             "→ 跟踪；估值分位只用 PB；金融类负债率与现金流两维取中性分\n")
     md.append(

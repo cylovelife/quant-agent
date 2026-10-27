@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""长期价值轨：推荐存档、前向跟踪、无前视历史回放。
+"""长期价值轨：推荐存档、前向跟踪、按披露日期过滤的描述性历史回放。
 
 三件事：
 
@@ -11,11 +11,10 @@
    同期收益，得到**超额收益**。长期投资只看绝对收益会被市场 beta 骗，
    必须看超额。
 
-3. **无前视历史回放**（historical_replay）——不等一年才知道模型行不行。
-   在过去三年里取若干历史时点，只用**当时已经能看到的数据**重算六维分，
-   再看后续 20/60/120 日收益，算截面 IC。
-   无前视的三条硬约束（这是整个项目最容易出错的地方）：
-     a. 财务只取 `NOTICE_DATE <= t` 的报告期——用公告日而非报告期截止日，
+3. **描述性历史回放**（historical_replay）——在历史时点按披露日期过滤六维分输入，
+   再看后续 20/60/120 日收益，算截面 IC。财务数值的历史修订版本尚未完整保存，
+   不能证明完整的当时可见数据或无前视。已有三条过滤约束：
+     a. 财务只取实际披露日期 `NOTICE_DATE < t` 的报告期——日期无盘中时间时保守等待次日，
         否则会用上还没公布的业绩；
      b. 估值分位只用 t 之前的 K 线，且用**不复权**价（前复权会篡改历史）；
      c. IC 必须**先按交易日分组**再算相关，直接对混合样本求相关会把
@@ -25,12 +24,14 @@
 且公布值序列的时点对齐容易出错，与其做一个半可信的版本，不如边界划干净。
 """
 import glob
+import csv
 import json
 import os
 from datetime import date, datetime
 
 import numpy as np
 import pandas as pd
+from data_quality import financial_available_date
 
 import fundamentals as fd
 import value_strategy as vs
@@ -94,8 +95,65 @@ def _index_on_or_after(k: pd.DataFrame, d: str):
     if k is None or k.empty:
         return None
     dates = k["date"].astype(str).str.slice(0, 10)
-    hit = dates[dates >= d]
-    return int(hit.index[0]) if len(hit) else None
+    return next((i for i, day in enumerate(dates) if day >= d), None)
+
+
+def _tracking_prices(frame: pd.DataFrame | None, today: str) -> pd.DataFrame | None:
+    """Keep observed closes within the evaluation date, without repairing bad histories."""
+    if frame is None or frame.empty or not {"date", "close"}.issubset(frame):
+        return None
+    days = pd.to_datetime(frame["date"], errors="coerce")
+    closes = pd.to_numeric(frame["close"], errors="coerce")
+    if (days.isna().any() or days.duplicated().any() or not days.is_monotonic_increasing
+            or not np.isfinite(closes).all() or (closes <= 0).any()):
+        return None
+    return frame.loc[days <= pd.Timestamp(today)].reset_index(drop=True)
+
+
+def price_change_observation(entry: str, exit_price: str) -> dict:
+    """Raw price change alone cannot establish total return without corporate-action coverage."""
+    from decimal import Decimal
+    start, end = Decimal(entry), Decimal(exit_price)
+    if not start.is_finite() or not end.is_finite() or start <= 0 or end <= 0:
+        raise ValueError("prices must be finite and positive")
+    return {"price_return": float(end / start - 1), "total_return": None,
+            "total_return_status": "corporate_actions_unavailable"}
+
+
+def _read_tracking_outcomes() -> pd.DataFrame:
+    """Read existing evidence strictly; corruption must not create new samples."""
+    columns = ["date", "code", "market", "name", "milestone", "score", *FACTORS_6,
+               "ret", "bench_ret", "excess"]
+    try:
+        with open(OUTCOMES, newline="", encoding="utf-8") as stream:
+            reader = csv.DictReader(stream, strict=True)
+            if reader.fieldnames != columns:
+                raise ValueError("invalid long-term outcomes schema; history requires recovery")
+            records = list(reader)
+    except FileNotFoundError:
+        return pd.DataFrame(columns=columns)
+    except csv.Error as exc:
+        raise ValueError("invalid long-term outcomes CSV; history requires recovery") from exc
+    if any(None in row or any(value is None for value in row.values()) for row in records):
+        raise ValueError("invalid long-term outcome row; history requires recovery")
+    frame = pd.DataFrame(records, columns=columns)
+    for row in records:
+        if (not row["code"].strip() or not row["market"].strip()
+                or date.fromisoformat(row["date"]).isoformat() != row["date"]):
+            raise ValueError("invalid long-term outcome identity; history requires recovery")
+    milestones = pd.to_numeric(frame["milestone"], errors="raise")
+    if (not np.isfinite(milestones).all() or (milestones <= 0).any()
+            or (milestones % 1 != 0).any()):
+        raise ValueError("invalid long-term outcome milestone; history requires recovery")
+    frame["milestone"] = milestones.astype(int)
+    for column in ("ret", "bench_ret", "excess"):
+        values = pd.to_numeric(frame[column].replace("", np.nan), errors="raise")
+        if (column == "ret" and values.isna().any()) or not np.isfinite(values.dropna()).all():
+            raise ValueError("invalid long-term outcome return; history requires recovery")
+        frame[column] = values
+    if frame.duplicated(subset=["date", "code", "market", "milestone"]).any():
+        raise ValueError("duplicate long-term outcome identities; history requires recovery")
+    return frame
 
 
 def settle_tracking(kline_fn, cfg: dict, today: str = None,
@@ -105,13 +163,15 @@ def settle_tracking(kline_fn, cfg: dict, today: str = None,
     miles = (cfg.get("longterm", {}) or {}).get("track_milestones",
                                                 MILESTONES_DEFAULT)
     bench_code = (cfg.get("longterm", {}) or {}).get("benchmark", "510300")
+    previous = _read_tracking_outcomes()
     hist = load_history(before=today)
     if not hist:
-        return {"batches": 0, "rows": [], "summary": {},
+        return {"batches": 0, "rows": [], "summary": {}, "return_basis": "price_change_only",
+                "total_return_status": "corporate_actions_unavailable",
                 "note": "尚无历史长期推荐（本次为首批，从下一个交易日起可结算 5 日里程碑）"}
 
     try:
-        bk = kline_fn(bench_code, "etf")
+        bk = _tracking_prices(kline_fn(bench_code, "etf"), today)
     except Exception:
         bk = None
     bk_dates = (bk["date"].astype(str).str.slice(0, 10).tolist()
@@ -119,15 +179,7 @@ def settle_tracking(kline_fn, cfg: dict, today: str = None,
 
     rows = []
     # 已完成结算的里程碑不重复写
-    done = set()
-    if os.path.exists(OUTCOMES):
-        try:
-            prev = pd.read_csv(OUTCOMES)
-            if {"date", "code", "milestone"} <= set(prev.columns):
-                done = {(str(a), str(b), int(c)) for a, b, c in
-                        zip(prev["date"], prev["code"], prev["milestone"])}
-        except Exception:
-            done = set()
+    done = set(zip(previous["date"], previous["code"], previous["market"], previous["milestone"]))
 
     for batch in hist:
         bdate = batch.get("date")
@@ -137,7 +189,7 @@ def settle_tracking(kline_fn, cfg: dict, today: str = None,
             if market == "fund":
                 continue                          # 场外基金按净值单独跟踪，见下
             try:
-                k = kline_fn(code, market)
+                k = _tracking_prices(kline_fn(code, market), today)
             except Exception:
                 k = None
             if k is None or k.empty:
@@ -151,16 +203,19 @@ def settle_tracking(kline_fn, cfg: dict, today: str = None,
             for n in miles:
                 if i0 + n >= len(k):
                     continue                      # 里程碑尚未到期
-                key = (bdate, code, int(n))
+                key = (bdate, code, market, int(n))
                 if key in done:
                     continue
                 px = float(k.iloc[i0 + n]["close"])
                 ret = px / entry - 1
                 b_ret = None
                 if bk_dates:
-                    j0, j1 = _index_on_or_after(bk, bdate), None
-                    if j0 is not None and j0 + n < len(bk):
-                        j1 = j0 + n
+                    start_day = str(k.iloc[i0]["date"])[:10]
+                    end_day = str(k.iloc[i0 + n]["date"])[:10]
+                    # Suspensions/missing bars can make the instrument's nth
+                    # observation differ from the benchmark's nth observation.
+                    if start_day in bk_dates and end_day in bk_dates:
+                        j0, j1 = bk_dates.index(start_day), bk_dates.index(end_day)
                         b_entry = float(bk.iloc[j0]["close"])
                         if b_entry > 0:
                             b_ret = float(bk.iloc[j1]["close"]) / b_entry - 1
@@ -173,6 +228,7 @@ def settle_tracking(kline_fn, cfg: dict, today: str = None,
                     "bench_ret": (round(b_ret, 5) if b_ret is not None else None),
                     "excess": (round(ret - b_ret, 5) if b_ret is not None else None),
                 })
+                done.add(key)
             if progress:
                 progress(f"长期跟踪结算 {it.get('name')}", 0, 1)
 
@@ -185,38 +241,35 @@ def settle_tracking(kline_fn, cfg: dict, today: str = None,
 
     # 汇总（含历史已落盘的记录）
     summary = {}
-    if os.path.exists(OUTCOMES):
-        try:
-            allrows = pd.read_csv(OUTCOMES)
-            for n, g in allrows.groupby("milestone"):
-                r = pd.to_numeric(g["ret"], errors="coerce").dropna()
-                e = pd.to_numeric(g.get("excess"), errors="coerce").dropna() \
-                    if "excess" in g.columns else pd.Series(dtype=float)
-                if not len(r):
-                    continue
-                summary[int(n)] = {
-                    "n": int(len(r)),
-                    "avg_ret": round(float(r.mean()) * 100, 2),
-                    "win_rate": round(float((r > 0).mean()) * 100, 1),
-                    "avg_excess": (round(float(e.mean()) * 100, 2) if len(e) else None),
-                    "excess_win": (round(float((e > 0).mean()) * 100, 1)
-                                   if len(e) else None),
-                }
-        except Exception:
-            pass
+    allrows = pd.DataFrame(previous.to_dict("records") + rows) if rows else previous
+    if not allrows.empty:
+        for n, g in allrows.groupby("milestone"):
+            r = pd.to_numeric(g["ret"], errors="raise").dropna()
+            e = pd.to_numeric(g["excess"], errors="raise").dropna()
+            if not len(r):
+                continue
+            summary[int(n)] = {
+                "n": int(len(r)),
+                "avg_ret": round(float(r.mean()) * 100, 2),
+                "win_rate": round(float((r > 0).mean()) * 100, 1),
+                "avg_excess": (round(float(e.mean()) * 100, 2) if len(e) else None),
+                "excess_win": (round(float((e > 0).mean()) * 100, 1)
+                               if len(e) else None),
+            }
     return {"batches": len(hist), "new_rows": len(rows),
-            "covered": len(df), "summary": summary}
+            "covered": len(df), "summary": summary, "return_basis": "price_change_only",
+            "total_return_status": "corporate_actions_unavailable"}
 
 
 # ---------------------------------------------------------------------------
 # 3) 无前视历史回放
 # ---------------------------------------------------------------------------
 def _asof_row(rows: list, t: str):
-    """取「公告日 <= t 的最近一期」财务行（无前视的关键）。"""
+    """日期精度公告从次日可用；未知公告日或法定截止日代理不参与回放。"""
     best = None
     for r in rows or []:
-        nd = str(r.get("NOTICE_DATE") or r.get("REPORT_DATE") or "")[:10]
-        if not nd or nd > t:
+        nd = financial_available_date(r)
+        if not nd or nd >= t:
             continue
         if best is None or nd > best[0]:
             best = (nd, r)
@@ -224,8 +277,7 @@ def _asof_row(rows: list, t: str):
 
 
 def _rows_upto(rows: list, t: str) -> list:
-    return [r for r in (rows or [])
-            if str(r.get("NOTICE_DATE") or r.get("REPORT_DATE") or "")[:10] <= t]
+    return [r for r in (rows or []) if (financial_available_date(r) or "9999-12-31") < t]
 
 
 def replay_score(rows: list, k_raw: pd.DataFrame, t: str,
@@ -272,7 +324,7 @@ def replay_score(rows: list, k_raw: pd.DataFrame, t: str,
 def historical_replay(items: list, kline_raw_fn, fin_cache: dict,
                       cfg: dict, params: dict, n_periods: int = 26,
                       step: int = 20, min_history: int = 260,
-                      progress=None) -> dict:
+                      progress=None, end_date: str | None = None) -> dict:
     """历史时点回放：产出「因子分 vs 未来收益」的截面 IC 表。
 
     items: [{"code","name","market"}]；fin_cache: {code: rows}（未命中则现拉）
@@ -285,6 +337,9 @@ def historical_replay(items: list, kline_raw_fn, fin_cache: dict,
             k = kline_raw_fn(code, market)
         except Exception:
             k = None
+        if k is not None and end_date is not None:
+            dates = pd.to_datetime(k["date"], errors="coerce")
+            k = k.loc[dates.notna() & (dates <= pd.Timestamp(end_date))].copy()
         if k is None or len(k) < min_history + max(miles) + 5:
             continue
         rows = fin_cache.get(code)
@@ -313,13 +368,20 @@ def historical_replay(items: list, kline_raw_fn, fin_cache: dict,
                 if j >= len(k):
                     ok = False
                     break
-                rec[f"ret_{n}"] = round(float(k.iloc[j]["close"]) / entry - 1, 5)
+                try:
+                    observation = price_change_observation(str(entry), str(k.iloc[j]["close"]))
+                except (ArithmeticError, ValueError):
+                    ok = False
+                    break
+                rec[f"ret_{n}"] = round(observation["price_return"], 5)
+                rec[f"label_end_ret_{n}"] = str(k.iloc[j]["date"])[:10]
             if ok:
                 records.append(rec)
         if progress:
             progress(f"历史回放 {it.get('name')}", idx + 1, len(items))
     if not records:
-        return {"n_obs": 0, "n_periods": 0, "factors": {}, "milestones": {}}
+        return {"n_obs": 0, "n_periods": 0, "factors": {}, "milestones": {},
+                "return_basis": "raw_price_change_only", "total_return_status": "corporate_actions_unavailable"}
     df = pd.DataFrame(records)
     horizons = {}
     for n in miles:
@@ -330,6 +392,7 @@ def historical_replay(items: list, kline_raw_fn, fin_cache: dict,
         horizons[n] = cross_section_ic(sub, FACTORS_CORE + ["score"], col)
     # 全局 IC（所有里程碑的合并视角，用 60 日为代表）
     return {"n_obs": int(len(df)), "n_periods": int(df["date"].nunique()),
+            "return_basis": "raw_price_change_only", "total_return_status": "corporate_actions_unavailable",
             "n_symbols": int(df["code"].nunique()),
             "date_range": [str(df["date"].min()), str(df["date"].max())],
             "milestones": horizons,

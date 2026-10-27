@@ -23,21 +23,29 @@ MySQL 需要常驻服务、端口、账号、备份策略与连接池，换来�
 
 写进这一层的三条纪律
 --------------------
+以下约定只适用于原有行情／研究缓存接口。
 - **幂等**：所有写入都是 `INSERT ... ON CONFLICT DO UPDATE`。同一天重跑、
   同一份数据重复落库，都不会产生重复行或翻倍计数。
 - **降级不报错**：数据层是优化不是正确性依赖。任何异常都吞掉并返回
   空结果，主流程退回原有的文件缓存路径。`QUANT_STORE=file` 可整体关闭。
 - **不替代原有产物**：`state/picks_*.json`、`outcomes.csv`、`positions.json`
   等仍然照旧写。数据库是**新增**的一份结构化副本，不是替换。
+
+现金账本的 create_paper_store / paper_connection 是独立严格入口：显式文件、
+独立身份与结构版本、整事务提交／回滚、错误向上传播，不使用缓存开关或空结果降级。
 """
 
 import json
 import os
 import sqlite3
 import threading
+from contextlib import contextmanager, closing
+from pathlib import Path
+from collections.abc import Iterator
 from datetime import datetime, timedelta
 
 import pandas as pd
+from data_quality import capture_provenance
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_DB = os.path.join(ROOT, "state", "quant.db")
@@ -377,6 +385,9 @@ def connect(force: bool = False):
             os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
             c = sqlite3.connect(path, timeout=10, check_same_thread=False)
             c.row_factory = sqlite3.Row
+            if c.execute("PRAGMA application_id").fetchone()[0] == PAPER_APPLICATION_ID:
+                c.close()
+                raise ValueError("paper cash ledger cannot be opened as market cache")
             c.execute("PRAGMA journal_mode=WAL")      # 读写不互斥
             c.execute("PRAGMA synchronous=NORMAL")    # 单机场景够用，写入快很多
             c.execute("PRAGMA foreign_keys=ON")
@@ -581,7 +592,7 @@ def load_kline(market: str, code: str, adjust: str, limit=None):
     """
     if not _ENABLED:
         return None
-    sql = ("SELECT date, open, close, high, low, volume, amount FROM kline "
+    sql = ("SELECT date, open, close, high, low, volume, amount, src, fetched_at FROM kline "
            "WHERE market=? AND code=? AND adjust=? ORDER BY date")
     rows = _query(sql, (str(market), str(code), adjust))
     if not rows:
@@ -590,7 +601,10 @@ def load_kline(market: str, code: str, adjust: str, limit=None):
         rows = rows[-int(limit):]
     df = pd.DataFrame(rows)
     df["date"] = pd.to_datetime(df["date"])
-    return df
+    provenance = capture_provenance(df, str(market), str(code), adjust)
+    result = df[["date", "open", "close", "high", "low", "volume", "amount"]].copy()
+    result.attrs["data_provenance"] = provenance
+    return result
 
 
 def kline_meta(market: str, code: str, adjust: str):
@@ -1528,6 +1542,152 @@ def clear_table(name: str) -> int:
     return _exec(f"DELETE FROM {name}")
 
 
+# Separate durable-money boundary. Never use the best-effort cache connection above.
+PAPER_APPLICATION_ID = 0x51504C31  # QPL1
+PAPER_SCHEMA_VERSION = 2
+PAPER_DDL = (
+    """CREATE TABLE paper_accounts (
+        account_id TEXT PRIMARY KEY, currency TEXT NOT NULL CHECK(currency='CNY'),
+        start_date TEXT NOT NULL, opening_minor INTEGER NOT NULL CHECK(typeof(opening_minor)='integer' AND opening_minor>=0),
+        policy_id TEXT NOT NULL, policy_json TEXT NOT NULL, created_at TEXT NOT NULL
+    )""",
+    """CREATE TABLE paper_orders (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+        account_id TEXT NOT NULL REFERENCES paper_accounts(account_id), order_id TEXT NOT NULL,
+        intent_hash TEXT NOT NULL, intent_json TEXT NOT NULL, execution_date TEXT NOT NULL,
+        status TEXT NOT NULL, result_json TEXT,
+        UNIQUE(account_id,order_id)
+    )""",
+    """CREATE TABLE paper_attempts (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+        order_sequence INTEGER NOT NULL REFERENCES paper_orders(sequence),
+        fingerprint TEXT NOT NULL, input_json TEXT NOT NULL, result_json TEXT NOT NULL,
+        created_at TEXT NOT NULL, UNIQUE(order_sequence,fingerprint)
+    )""",
+    """CREATE TABLE paper_events (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+        account_id TEXT NOT NULL REFERENCES paper_accounts(account_id),
+        order_sequence INTEGER REFERENCES paper_orders(sequence), event_key TEXT NOT NULL UNIQUE,
+        kind TEXT NOT NULL CHECK(kind IN ('opening_cash','trade_cash','commission','stamp_duty','transfer','quantity')),
+        event_date TEXT NOT NULL, cash_minor INTEGER NOT NULL DEFAULT 0,
+        quantity_delta INTEGER NOT NULL DEFAULT 0, market TEXT NOT NULL DEFAULT '', code TEXT NOT NULL DEFAULT '',
+        CHECK(typeof(cash_minor)='integer' AND typeof(quantity_delta)='integer'),
+        CHECK((kind='quantity' AND cash_minor=0) OR (kind<>'quantity' AND quantity_delta=0)),
+        UNIQUE(order_sequence,kind)
+    )""",
+    "CREATE INDEX paper_events_account ON paper_events(account_id,sequence)",
+    """CREATE TRIGGER paper_events_no_update BEFORE UPDATE ON paper_events
+       BEGIN SELECT RAISE(ABORT,'paper events are append-only'); END""",
+    """CREATE TRIGGER paper_events_no_delete BEFORE DELETE ON paper_events
+       BEGIN SELECT RAISE(ABORT,'paper events are append-only'); END""",
+    """CREATE TRIGGER paper_attempts_no_update BEFORE UPDATE ON paper_attempts
+       BEGIN SELECT RAISE(ABORT,'paper attempts are append-only'); END""",
+    """CREATE TRIGGER paper_attempts_no_delete BEFORE DELETE ON paper_attempts
+       BEGIN SELECT RAISE(ABORT,'paper attempts are append-only'); END""",
+    """CREATE TRIGGER paper_accounts_no_update BEFORE UPDATE ON paper_accounts
+       BEGIN SELECT RAISE(ABORT,'paper account origin is immutable'); END""",
+    """CREATE TRIGGER paper_accounts_no_delete BEFORE DELETE ON paper_accounts
+       BEGIN SELECT RAISE(ABORT,'paper account origin is immutable'); END""",
+    """CREATE TRIGGER paper_orders_no_delete BEFORE DELETE ON paper_orders
+       BEGIN SELECT RAISE(ABORT,'paper order history is immutable'); END""",
+    """CREATE TRIGGER paper_orders_intent_immutable
+       BEFORE UPDATE OF account_id,order_id,intent_hash,intent_json,execution_date ON paper_orders
+       BEGIN SELECT RAISE(ABORT,'paper order intent is immutable'); END""",
+)
+
+PAPER_V2_DDL = (
+    """CREATE TABLE paper_actions (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+        account_id TEXT NOT NULL REFERENCES paper_accounts(account_id),
+        action_id TEXT NOT NULL, after_attempt INTEGER NOT NULL CHECK(after_attempt>=0),
+        action_date TEXT NOT NULL, phase TEXT NOT NULL,
+        intent_hash TEXT NOT NULL, intent_json TEXT NOT NULL, result_json TEXT NOT NULL,
+        cash_minor INTEGER NOT NULL CHECK(typeof(cash_minor)='integer'),
+        quantity_delta INTEGER NOT NULL CHECK(typeof(quantity_delta)='integer'),
+        UNIQUE(account_id,action_id)
+    )""",
+    "CREATE INDEX paper_actions_account ON paper_actions(account_id,sequence)",
+    """CREATE TRIGGER paper_actions_no_update BEFORE UPDATE ON paper_actions
+       BEGIN SELECT RAISE(ABORT,'paper actions are append-only'); END""",
+    """CREATE TRIGGER paper_actions_no_delete BEFORE DELETE ON paper_actions
+       BEGIN SELECT RAISE(ABORT,'paper actions are append-only'); END""",
+)
+
+
+def _paper_path(path: str | Path) -> Path:
+    target = Path(path).resolve()
+    if target in {Path(DEFAULT_DB).resolve(), Path(db_path()).resolve()}:
+        raise ValueError(
+            "cash ledger must be separate from the configured market cache"
+        )
+    return target
+
+
+def create_paper_store(path: str | Path) -> Path:
+    """Exclusively create an empty ledger; never migrate/overwrite an existing file."""
+    target = _paper_path(path)
+    fd = os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    os.close(fd)
+    try:
+        with closing(sqlite3.connect(target, isolation_level=None)) as conn:
+            conn.execute("PRAGMA foreign_keys=ON")
+            conn.execute("PRAGMA synchronous=FULL")
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                for ddl in PAPER_DDL:
+                    conn.execute(ddl)
+                if PAPER_SCHEMA_VERSION == 2:
+                    for ddl in PAPER_V2_DDL:
+                        conn.execute(ddl)
+                conn.execute(f"PRAGMA application_id={PAPER_APPLICATION_ID}")
+                conn.execute(f"PRAGMA user_version={PAPER_SCHEMA_VERSION}")
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
+    except BaseException:
+        target.unlink(missing_ok=True)
+        raise
+    return target
+
+
+@contextmanager
+def paper_connection(
+    path: str | Path, *, write: bool = False
+) -> Iterator[sqlite3.Connection]:
+    """Explicit, fail-closed transaction; independent of QUANT_STORE and cache fallback."""
+    target = _paper_path(path)
+    if not target.is_file():
+        raise FileNotFoundError(target)
+    mode = "rw" if write else "ro"
+    with closing(
+        sqlite3.connect(
+            target.as_uri() + "?mode=" + mode,
+            uri=True,
+            timeout=10,
+            isolation_level=None,
+        )
+    ) as conn:
+        conn.row_factory = sqlite3.Row
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+        if (conn.execute("PRAGMA application_id").fetchone()[0] != PAPER_APPLICATION_ID
+                or version not in {1, PAPER_SCHEMA_VERSION}):
+            raise ValueError("unsupported or non-paper ledger database")
+        if write and version != PAPER_SCHEMA_VERSION:
+            raise ValueError("old ledger requires explicit copy migration before writing")
+        conn.execute("PRAGMA foreign_keys=ON")
+        if write:
+            conn.execute("PRAGMA synchronous=FULL")
+        conn.execute("BEGIN IMMEDIATE" if write else "BEGIN")
+        try:
+            yield conn
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+
+
 if __name__ == "__main__":
     import pprint
+
     pprint.pprint(stats())
