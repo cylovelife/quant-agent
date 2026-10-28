@@ -9,6 +9,7 @@
 文档入口：
 
 - [本次全部自有代码、历史驱动及复现入口](CODE_MAP.md)
+- [模型、数据处理与特征提取讲解：从马尔可夫链到监督学习](stock_price_model_feature_walkthrough_2026-10-28.md)
 - [证据、候选比较与论文取舍](research_2026-10-28.md)
 - [首两周每日任务与工程实施顺序](execution_2026-10-28.md)
 - [第2天完成记录与真实数据问题](day2_stock_price_predictor.md)
