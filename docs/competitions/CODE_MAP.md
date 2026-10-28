@@ -74,4 +74,4 @@
 
 本轮本地验证（2026-10-28）：上述pytest命令为`44 passed in 8.74s`；竞赛模块及测试`ruff check`通过；最终CSV为365条预测、SHA与已提交版本一致，已有输出路径拒绝覆盖。15项自有源码清单哈希、4份历史快照逐字节核对通过。暂存31个文件，检查未含原始xlsx、CSV、账本或实际凭据值。远程推送与Kaggle代码公开状态需分别以平台回读为准。
 
-平台交付的完成与阻塞状态见[本轮交付记录](code_delivery_2026-10-28.md)。
+[本轮交付记录](code_delivery_2026-10-28.md)记录验证、公开状态与交付边界。对应比赛的[公开代码审阅Notebook](https://www.kaggle.com/code/leon0330/stock-price-predictor-code-review-20261028)已提供同一份源码。
