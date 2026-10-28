@@ -68,7 +68,7 @@
 
 ## 本次远程交付边界
 
-推送对象为现有公开GitHub仓库的`codex/kaggle-day2`分支，不合入投资系统main。Kaggle规则要求公开竞赛代码同时在对应比赛Notebook/论坛提供，且使用允许商业使用的OSI许可证；额外的Kaggle公开发布与许可证选择需用户明确授权。准备包不包含原始比赛数据、提交预测、账号凭据或无关投资运行产物。
+推送对象为现有公开GitHub仓库的`codex/kaggle-day2`分支，不合入投资系统main。Kaggle规则要求公开竞赛代码同时在对应比赛Notebook/论坛提供，且使用允许商业使用的OSI许可证；用户已明确授权额外的Kaggle代码公开发布，以及本次新增竞赛代码采用Apache-2.0；[许可范围](CODE_LICENSE.md)逐项列明，不扩展到既有投资系统。准备包不包含原始比赛数据、提交预测、账号凭据或无关投资运行产物。
 
 交付核验使用`git-workflow`、`finishing-a-development-branch`和`verification-before-completion`。已读项目AGENTS、skills-index、engineering-workflow、Python code-style/data-runtime及anti-hallucination规则。核实个人Git作者/提交者邮箱、GitHub SSH身份、公开可见性与远程分支；数据/账本隔离Harness充分，未修改工程指令。实际测试、复现和远程提交结果在交付时分别报告。
 
