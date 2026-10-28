@@ -1,0 +1,109 @@
+{
+  "schema_version": 1,
+  "competition": "stock-price-predictor",
+  "audited_on": "2026-10-28",
+  "status": "practice_only",
+  "rules": {
+    "accepted_with_user_authorization": true,
+    "provided_data_only": true,
+    "test_target_usage_allowed": false,
+    "private_sharing_outside_official_team_allowed": false,
+    "awards_points_or_medals": false,
+    "rules_url": "https://www.kaggle.com/competitions/stock-price-predictor/rules"
+  },
+  "dataset": {
+    "archive_sha256": "89068e5d5dcf4639fe52775b807e9b1f7909c86e708a21a722196ea64fda30e0",
+    "raw_root": "state/competitions/stock-price-predictor/raw",
+    "canonical_files": {
+      "Train.xlsx": {
+        "sha256": "ca6e4e4621ca774e40180814cac5bda5872c6cc26b77aee8970a2cf004d0238c",
+        "sheet": "Train",
+        "rows": 1460,
+        "columns": [
+          "Date",
+          "High",
+          "Low",
+          "Open",
+          "Close",
+          "Target"
+        ],
+        "identical_duplicate": "StockTrends/Train.xlsx"
+      },
+      "Test.xlsx": {
+        "sha256": "3319a611dead47ca837b28fc1965965a113948031233dd04e880d94fe08aec4d",
+        "sheet": "Test",
+        "rows": 364,
+        "columns": [
+          "Date",
+          "High",
+          "Low",
+          "Open",
+          "Close"
+        ],
+        "identical_duplicate": "StockTrends/Test.xlsx"
+      },
+      "sample_submission.xlsx": {
+        "sha256": "eca72fc4865c535b67628285d92c4f15e49ed9029ef24f29fdb43137563c1fa5",
+        "sheet": "Sample_submission",
+        "rows": 364,
+        "columns": [
+          "Id",
+          "Target"
+        ],
+        "identical_duplicate": "StockTrends/sample_submission.xlsx"
+      }
+    },
+    "ticker": null,
+    "exchange": null,
+    "adjustment": null,
+    "date_grain": "calendar_day",
+    "weekend_repeated_ohlc": {
+      "train": 416,
+      "test": 104
+    }
+  },
+  "label": {
+    "definition": "1 if next provided calendar row Close > current Close, else 0",
+    "signal_information": "current-row OHLC available after current close; no later rows",
+    "end_date": "next provided row Date",
+    "exclude_train_dates": [
+      "2019-11-21"
+    ],
+    "exclusion_reason": "terminal Excel target formula references blank E1462",
+    "audited_nonterminal_train_rows": 1459,
+    "mismatches": 0,
+    "use_test_rows_to_derive_targets": false
+  },
+  "submission": {
+    "preferred_format": "csv",
+    "allowed_formats_observed": [
+      "csv",
+      "parquet"
+    ],
+    "data_rows": 364,
+    "rows_including_header": 365,
+    "columns": [
+      "Id",
+      "Target"
+    ],
+    "id_mapping": "zero-based original Test.xlsx row order",
+    "id_min": 0,
+    "id_max": 363,
+    "target_domain": [
+      0,
+      1
+    ],
+    "remaining_today_observed": 9,
+    "daily_limit_confirmed": false,
+    "server_scored_submission_performed": false,
+    "final_selection_limit_observed": 2,
+    "submission_list_observed_empty": true
+  },
+  "next_step": {
+    "maximum_additional_human_hours": 4,
+    "purpose": "one baseline and one valid submission workflow; then move primary training to Hull",
+    "weekend_rows": "retain for official practice metric; do not relabel as trading sessions",
+    "training_terminal_row": "exclude without modifying raw file",
+    "investment_efficacy_claim_allowed": false
+  }
+}

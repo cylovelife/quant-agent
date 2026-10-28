@@ -1,0 +1,35 @@
+"""Invoke the official CLI with shell-provided credentials held only in memory.
+
+@author cylovelife
+"""
+import json
+import os
+from pathlib import Path
+import shlex
+import subprocess
+import sys
+
+names = ('KAGGLE_API_TOKEN', 'KAGGLE_USERNAME', 'KAGGLE_KEY')
+probe = 'import os,json; print(json.dumps({k:os.environ.get(k) for k in ' + repr(names) + '}))'
+shell = subprocess.run(['/bin/zsh', '-ic', 'python3 -c ' + shlex.quote(probe)],
+                       capture_output=True, text=True, timeout=25)
+credentials = {}
+for line in shell.stdout.splitlines():
+    try:
+        value = json.loads(line)
+        if isinstance(value, dict) and set(value) == set(names):
+            credentials = {k: v for k, v in value.items() if v}
+    except json.JSONDecodeError:
+        pass
+if not credentials.get('KAGGLE_API_TOKEN'):
+    raise SystemExit('Kaggle credential not available')
+environment = os.environ.copy()
+environment.update(credentials)
+cli = Path(__file__).resolve().parent / 'kaggle-cli/bin/kaggle'
+result = subprocess.run([str(cli), *sys.argv[1:]], env=environment,
+                        capture_output=True, text=True, timeout=65)
+for stream, content in ((sys.stdout, result.stdout), (sys.stderr, result.stderr)):
+    for credential in credentials.values():
+        content = content.replace(credential, '[REDACTED]')
+    stream.write(content)
+raise SystemExit(result.returncode)

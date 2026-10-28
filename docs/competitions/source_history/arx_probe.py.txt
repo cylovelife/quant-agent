@@ -1,0 +1,58 @@
+"""Run fixed AR(5)/ARX(5) comparisons using mature pre-2019 train labels.
+
+@author cylovelife
+"""
+from pathlib import Path
+from datetime import datetime, timezone
+import hashlib
+import json
+import sys
+import numpy as np
+
+ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(ROOT / 'src'))
+from competition_data import load_dataset
+from competition_baseline import fit_predict
+from competition_timeseries import ar_features, fit_arx
+from competition_validation import purged_window
+from competition_metrics import classification_metrics
+
+out = ROOT / 'state/competitions/stock-price-predictor/arx-study'
+out.mkdir(exist_ok=False)
+protocol_path = ROOT / 'docs/competitions/arx_protocol.json'
+protocol = json.loads(protocol_path.read_text())
+frozen = {'registered_at': datetime.now(timezone.utc).isoformat(), 'protocol': protocol,
+          'source_sha256': {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+                            for p in (ROOT / 'src').glob('competition_*.py')}}
+(out / 'frozen.json').write_text(json.dumps(frozen, indent=2) + '\n')
+data = load_dataset(ROOT / 'state/competitions/stock-price-predictor/raw',
+                    ROOT / 'docs/competitions/stock_price_predictor_contract.json')
+cutoff = protocol['cutoff_exclusive']
+# Both feature and return-label construction are physically restricted to TRAIN history.
+history = data.prices.loc[data.prices.Date < cutoff].copy()
+labels = data.labels.loc[(data.labels.Date < cutoff) & (data.labels.label_end < cutoff)].copy()
+returns = history[['Date']].copy()
+returns['future_return'] = history.Close.shift(-1) / history.Close - 1
+panel = labels.merge(returns, on='Date', validate='one_to_one').merge(ar_features(history), on='Date', validate='one_to_one').dropna()
+assert np.array_equal((panel.future_return > 0).astype(int), panel.Target)
+lag_names = [f'return_lag_{i}' for i in range(5)]
+x_names = list(ar_features(history).columns.drop('Date'))
+results = {k: [] for k in ['calendar', 'AR5_ridge', 'ARX5_ridge']}
+for start, end in protocol['windows']:
+    fit, valid = purged_window(panel, start, end)
+    pred, _ = fit_predict('calendar', fit, valid, [])
+    results['calendar'].append(classification_metrics(valid.Target, pred))
+    for name, features in [('AR5_ridge', lag_names), ('ARX5_ridge', x_names)]:
+        pred, forecast, model_info = fit_arx(fit, valid, features)
+        m = classification_metrics(valid.Target, pred)
+        m.update({'start': start, 'end_exclusive': end, 'return_mse': float(np.mean((forecast-valid.future_return)**2)), 'model': model_info})
+        results[name].append(m)
+        valid[['Date','Target']].assign(Prediction=pred, ForecastReturn=forecast).to_csv(out / (name+'-'+start+'.csv'), index=False)
+raw_returns = history.Close.pct_change(fill_method=None).dropna()
+summary = {'results': results, 'mean_accuracy': {k: float(np.mean([m['accuracy'] for m in v])) for k,v in results.items()},
+           'training_return_acf': {str(lag): float(raw_returns.autocorr(lag=lag)) for lag in range(1,11)},
+           'label_clock': 'next provided calendar row; no entity dimension',
+           'candidate_fits': 8, 'public_score_used_in_fit': False, 'test_labels_used_or_derived': False,
+           'holdout_2019_reused': False, 'platform_submission_from_this_study': False}
+(out / 'results.json').write_text(json.dumps(summary, indent=2) + '\n')
+print(json.dumps({k:v for k,v in summary.items() if k!='results'}, indent=2))

@@ -1,0 +1,70 @@
+"""One bounded, preregistered exploratory event-clock ablation.
+
+@author cylovelife
+"""
+import hashlib
+import json
+from pathlib import Path
+import sys
+from datetime import datetime, timezone
+
+import numpy as np
+
+ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(ROOT / 'src'))
+from competition_data import load_dataset
+from competition_baseline import build_features, fit_predict
+from competition_event_clock import event_features, gated_predict
+from competition_metrics import classification_metrics
+from competition_validation import purged_window
+
+out = ROOT / 'state/competitions/stock-price-predictor/event-clock-probe'
+out.mkdir(exist_ok=False)
+protocol_path = ROOT / 'docs/competitions/event_clock_protocol.json'
+protocol = json.loads(protocol_path.read_text())
+source = {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+          for p in (ROOT / 'src').glob('competition_*.py')}
+frozen = {'started_at': datetime.now(timezone.utc).isoformat(), 'protocol': protocol,
+          'protocol_sha256': hashlib.sha256(protocol_path.read_bytes()).hexdigest(),
+          'source_sha256': source}
+(out / 'frozen.json').write_text(json.dumps(frozen, indent=2) + '\n')
+data = load_dataset(ROOT / 'state/competitions/stock-price-predictor/raw',
+                    ROOT / 'docs/competitions/stock_price_predictor_contract.json')
+cutoff = protocol['labels_before_exclusive']
+prices = data.prices.loc[data.prices.Date < cutoff].copy()
+labels = data.labels.loc[(data.labels.Date < cutoff) & (data.labels.label_end < cutoff)].copy()
+calendar = build_features(prices)
+event = event_features(prices)
+calendar_names = list(calendar.columns.drop('Date'))
+event_names = list(event.columns.drop('Date'))
+event = event.rename(columns={n: 'probe_' + n for n in event_names})
+event_names = ['probe_' + n for n in event_names]
+panel = labels.merge(calendar, on='Date', validate='one_to_one').merge(event, on='Date', validate='one_to_one').dropna()
+records = {name: [] for name in ['calendar', *protocol['candidates']]}
+for start, end in protocol['windows']:
+    train, valid = purged_window(panel, start, end)
+    base, _ = fit_predict('calendar', train, valid, calendar_names)
+    for name, features in [('calendar', calendar_names), ('gated_calendar_clock', calendar_names), ('gated_event_clock', event_names)]:
+        if name == 'calendar':
+            pred, gate = base, [4, 5]
+        else:
+            pred, gate = gated_predict(train, valid, features)
+        active = ~valid.Date.dt.dayofweek.isin(gate)
+        metrics = classification_metrics(valid.Target, pred)
+        metrics.update({'start': start, 'end_exclusive': end, 'training_rows': len(train),
+                        'gate_weekdays': gate, 'outside_gate': classification_metrics(valid.Target.loc[active], pred[active])})
+        records[name].append(metrics)
+        valid[['Date', 'Target']].assign(Prediction=pred).to_csv(out / (start + '-' + name + '.csv'), index=False)
+a = np.array([m['accuracy'] for m in records['gated_calendar_clock']])
+b = np.array([m['accuracy'] for m in records['gated_event_clock']])
+accepted = bool((b.mean() >= a.mean() + .01) and ((b-a).min() >= -.01))
+labels['weekday'] = labels.Date.dt.dayofweek
+weekday = labels.groupby('weekday').Target.agg(['size', 'sum', 'mean']).to_dict('index')
+result = {'records': records, 'mean_accuracy': {k: float(np.mean([m['accuracy'] for m in v])) for k,v in records.items()},
+          'event_clock_increment_accepted': accepted, 'paired_event_minus_calendar': (b-a).tolist(),
+          'weekday_training_description_before_2019': weekday, 'candidate_configurations': 2,
+          'candidate_fits': 8, 'reference_fits': 4, 'used_2019_holdout': False,
+          'test_labels_used_or_derived': False, 'unseen_test_claim': False,
+          'submission_changed': False, 'raw_sha256': data.file_hashes}
+(out / 'results.json').write_text(json.dumps(result, indent=2) + '\n')
+print(json.dumps(result, indent=2))

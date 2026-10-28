@@ -1,0 +1,80 @@
+{
+  "scope": "owned competition implementation, tests and verbatim historical drivers; excludes data, predictions, credentials and third-party code",
+  "files": [
+    {
+      "path": "docs/competitions/source_history/arx_probe.py.txt",
+      "sha256": "81d123a380852cddf460628bc9687b60d46f25512df294be224118bf5d2878b9",
+      "kind": "historical_snapshot"
+    },
+    {
+      "path": "docs/competitions/source_history/audit_day2.py.txt",
+      "sha256": "60491e8a551eab9aa006523fb3cfcecdfea42a329e9cc67a0ee1f3f8a8ef9ecd",
+      "kind": "historical_snapshot"
+    },
+    {
+      "path": "docs/competitions/source_history/event_clock_probe.py.txt",
+      "sha256": "7e9089b11fe02f34b0d9a63a9242f7bdf897bd870b4470479d813daadcfec624",
+      "kind": "historical_snapshot"
+    },
+    {
+      "path": "docs/competitions/source_history/kaggle_env_exec.py.txt",
+      "sha256": "eb3860f7857f0cb915ad644bc1347cf8da2cf8e9809794db4e292307266c87b1",
+      "kind": "historical_snapshot"
+    },
+    {
+      "path": "src/competition_baseline.py",
+      "sha256": "91225fea7de517d879fe6eaacf7e8934bfb193d97c952b9526d5e3ff88bc0b8d",
+      "kind": "source"
+    },
+    {
+      "path": "src/competition_data.py",
+      "sha256": "01fe4e6c21e1bf96297ddefc6af65c9d8a0f00686ac1273c11fb69c420eeca2e",
+      "kind": "source"
+    },
+    {
+      "path": "src/competition_event_clock.py",
+      "sha256": "e3e33ecc54b6f348568924350be0f2fd52eaedb15bfd0966b698a46f01cbc765",
+      "kind": "source"
+    },
+    {
+      "path": "src/competition_metrics.py",
+      "sha256": "e7dc05196406d3b471abff4e64bf35bdf7d493fa53cc1bf1c715d7c0bb607311",
+      "kind": "source"
+    },
+    {
+      "path": "src/competition_reproduce.py",
+      "sha256": "0dcce37b6fa19c9e1dbe9a0620df6b297c95da4ed63fb02c6a1c484841dff493",
+      "kind": "source"
+    },
+    {
+      "path": "src/competition_submission.py",
+      "sha256": "bcb0797d4a409889b8a27973a5a44b240cb25fbbeb6085f19c03152291754305",
+      "kind": "source"
+    },
+    {
+      "path": "src/competition_timeseries.py",
+      "sha256": "b13ee8ce8bd6f4764a1e196fd84f893757bd65ad9794e03ab24f8c29c283ddbe",
+      "kind": "source"
+    },
+    {
+      "path": "src/competition_validation.py",
+      "sha256": "d240248365b91ee746db55a52900f4359641d64386bde0ca4940b87f9de089e8",
+      "kind": "source"
+    },
+    {
+      "path": "tests/test_competition_event_clock.py",
+      "sha256": "fdcd1d92dc7ce1a59be4b367b936d13055f77b7cb50c6313c090dc26ff0ab221",
+      "kind": "test"
+    },
+    {
+      "path": "tests/test_competition_pipeline.py",
+      "sha256": "1a30c77364331629e8f1afb935dd8595990c5c3423abeead5a165f61e40d1b6a",
+      "kind": "test"
+    },
+    {
+      "path": "tests/test_competition_timeseries.py",
+      "sha256": "d7f99911bb98cf67fb684085da28c91f9d184f4e5f05fb5f8d039648fdc25694",
+      "kind": "test"
+    }
+  ]
+}

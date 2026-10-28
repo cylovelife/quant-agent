@@ -1,0 +1,20 @@
+{
+  "purpose": "single-sequence autoregression comparison; user requires first competition only",
+  "registered_before_fit": true,
+  "cutoff_exclusive": "2019-01-01",
+  "windows": [["2017-01-01", "2017-07-01"], ["2017-07-01", "2018-01-01"], ["2018-01-01", "2018-07-01"], ["2018-07-01", "2019-01-01"]],
+  "candidates": ["AR5_ridge", "ARX5_ridge"],
+  "alpha": 10.0,
+  "target": "next provided calendar row return; TRAIN prices only; labels must mature before split boundary",
+  "class_threshold": 0.0,
+  "zero_weekday_gate": "at least 20 training rows and all training Target=0",
+  "features_AR5": "current return and four previous returns",
+  "features_ARX5": "AR5 plus weekday dummies, normalized candle body/upper/lower wick, range and gap",
+  "reference": "calendar",
+  "selection": "retain simpler reference unless mean Accuracy improves at least 0.01 and each window loses no more than 0.01",
+  "max_candidate_fits": 8,
+  "test_labels_allowed": false,
+  "holdout_2019_reused": false,
+  "public_score_used_in_fit": false,
+  "independent_unseen_validation_claim": false
+}

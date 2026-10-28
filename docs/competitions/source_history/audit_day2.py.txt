@@ -1,0 +1,123 @@
+"""Read-only audit of the downloaded competition files; never derive test labels.
+
+@author cylovelife
+"""
+
+from collections import Counter
+import hashlib
+import importlib.metadata
+import json
+from pathlib import Path
+import sys
+
+import openpyxl
+import pandas as pd
+
+
+root = Path(__file__).resolve().parent
+raw = root / "raw"
+files = {}
+formula_report = {}
+for name in ("Train.xlsx", "Test.xlsx", "sample_submission.xlsx"):
+    content = (raw / name).read_bytes()
+    duplicate = (raw / "StockTrends" / name).read_bytes()
+    assert content == duplicate, f"Duplicate mismatch: {name}"
+    files[name] = {
+        "sha256": hashlib.sha256(content).hexdigest(),
+        "bytes": len(content),
+        "duplicate": f"StockTrends/{name}",
+    }
+    wb = openpyxl.load_workbook(raw / name, read_only=True, data_only=False)
+    try:
+        assert len(wb.worksheets) == 1
+        ws = wb.worksheets[0]
+        counts = Counter()
+        for row in ws:
+            for cell in row:
+                if cell.data_type == "f":
+                    counts[cell.column_letter] += 1
+        formula_report[name] = {"sheet": ws.title, "counts_by_column": dict(counts)}
+        if name == "Train.xlsx":
+            assert ws["F1461"].value == "=IF(E1462>E1461,1,0)"
+            assert ws["E1462"].value is None
+    finally:
+        wb.close()
+
+train = pd.read_excel(raw / "Train.xlsx", sheet_name="Train")
+test = pd.read_excel(raw / "Test.xlsx", sheet_name="Test")
+sample = pd.read_excel(raw / "sample_submission.xlsx", sheet_name="Sample_submission")
+assert list(train) == ["Date", "High", "Low", "Open", "Close", "Target"]
+assert list(test) == ["Date", "High", "Low", "Open", "Close"]
+assert list(sample) == ["Id", "Target"]
+summary = {}
+for role, frame in (("train", train), ("test", test)):
+    dates = pd.to_datetime(frame["Date"])
+    prices = frame[["High", "Low", "Open", "Close"]]
+    weekend = dates.dt.dayofweek >= 5
+    repeated = prices.eq(prices.shift()).all(axis=1)
+    invalid = (
+        (prices.High < prices[["Open", "Close", "Low"]].max(axis=1))
+        | (prices.Low > prices[["Open", "Close", "High"]].min(axis=1))
+        | (prices <= 0).any(axis=1)
+    )
+    summary[role] = {
+        "rows": len(frame),
+        "columns": list(frame),
+        "date_start": dates.min().date().isoformat(),
+        "date_end": dates.max().date().isoformat(),
+        "missing_cells": int(frame.isna().sum().sum()),
+        "duplicate_dates": int(dates.duplicated().sum()),
+        "sorted": bool(dates.is_monotonic_increasing),
+        "calendar_daily": bool(dates.diff().dropna().eq(pd.Timedelta(days=1)).all()),
+        "weekend_rows": int(weekend.sum()),
+        "weekend_repeated_ohlc": int((weekend & repeated).sum()),
+        "all_repeated_ohlc": int(repeated.sum()),
+        "invalid_ohlc_rows": int(invalid.sum()),
+    }
+    assert not frame.isna().any().any()
+    assert dates.is_unique and dates.is_monotonic_increasing
+    assert not invalid.any()
+
+expected = (train.Close.shift(-1) > train.Close).iloc[:-1].astype(int)
+valid_target = train.Target.iloc[:-1]
+assert set(train.Target.unique()) == {0, 1}
+assert expected.equals(valid_target)
+assert sample.Id.tolist() == list(range(len(test)))
+assert set(sample.Target.unique()) == {0}
+assert train.Date.max() < test.Date.min()
+assert not set(train.Date).intersection(test.Date)
+summary["train_labels"] = {
+    "audited_rows": len(expected),
+    "mismatches": int((expected != valid_target).sum()),
+    "raw_counts": {str(k): int(v) for k, v in train.Target.value_counts().items()},
+    "usable_counts": {str(k): int(v) for k, v in valid_target.value_counts().items()},
+    "terminal_row_excluded": "2019-11-21",
+    "terminal_formula": "=IF(E1462>E1461,1,0)",
+    "majority_accuracy_on_usable_train": float(valid_target.value_counts().max() / len(valid_target)),
+}
+summary["submission"] = {
+    "rows": len(sample),
+    "columns": list(sample),
+    "id_min": int(sample.Id.min()),
+    "id_max": int(sample.Id.max()),
+    "all_cached_placeholder_targets_zero": True,
+    "id_matches_test_row_order": True,
+    "server_submission_performed": False,
+}
+result = {
+    "schema_version": 1,
+    "archive_sha256": hashlib.sha256((root / "downloads/stock-price-predictor.zip").read_bytes()).hexdigest(),
+    "files": files,
+    "formulas": formula_report,
+    "audit": summary,
+    "test_labels_derived": False,
+    "model_training_performed": False,
+    "analysis_environment": {
+        "python": sys.version,
+        "executable": sys.executable,
+        "pandas": importlib.metadata.version("pandas"),
+        "openpyxl": importlib.metadata.version("openpyxl"),
+    },
+    "audit_script_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+}
+print(json.dumps(result, indent=2, ensure_ascii=False, allow_nan=False))
