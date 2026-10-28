@@ -64,7 +64,7 @@
 
 D1仅查源码与文档；D3已新增隔离竞赛模块，并运行新增竞赛、既有时间验证和研究实验测试共38例通过；未评价投资系统当前收益能力。README 与 10 月 27 日冷启动记录存在账户状态描述差异，本任务不据此判断当前账户是否运行，也不推进其结算。
 
-已选择同仓库的独立worktree与虚拟环境，活动目录为 `/Users/cylove0330/.codex/worktrees/kaggle-stock-price/quant-agent`，分支 `codex/kaggle-day2`，沿用平铺Python模块布局。现有 `daily_research.code_signature()` 覆盖 `src/` 下全部Python文件，新增竞赛模块也会改变指纹；后续合入需单独处理冻结版本。竞赛文件、模型、预测与实验库放在忽略的 `state/competitions/<slug>/`，不占用真实行情库、正式账本或生产参数。
+已选择同仓库的独立worktree与虚拟环境，活动目录为 `/Users/cylove0330/.codex/worktrees/kaggle-stock-price/quant-agent`，分支 `codex/kaggle-day2`，沿用平铺Python模块布局。现有 `daily_research.code_signature()` 覆盖 `src/` 下全部Python文件，新增竞赛模块也会改变指纹；本次源码纳入远程main，但原投资本地工作区及冻结实验保持原样；后续更新本地运行代码仍须按既有运行版本衔接流程处理。竞赛文件、模型、预测与实验库放在忽略的 `state/competitions/<slug>/`，不占用真实行情库、正式账本或生产参数。
 
 ## 两年路线与进入条件
 
