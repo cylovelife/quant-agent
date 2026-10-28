@@ -1,5 +1,8 @@
 # quant-agent 工程边界
 
+- 用户日常主工程为 `~/Documents/tech/mydev/quant-agent`，负责与远程 `origin/main` 对接。隔离worktree用于开发；远程合入后须同步主工程，并验证HEAD、受Git管理的文件和干净状态。
+- 同步前保全未提交或未跟踪内容，不用强制重置或清理丢弃文件。源码同步与运行版本衔接分开：主工程保持最新，既有冻结实验仍按原门禁在新副本衔接，不回写旧记录。
+
 - CLI 真理源：`src/quant_agent/entrypoints/cli.py`；`run.py`保留源码工作区启动兼容。配置真理源：`config.json`、`params/params.json`；RSI 方向见
   `docs/design_selfloop_v1.md`（其中历史结果不代表当前验证结果）。
 - 源码按 `src/quant_agent/` 的领域、应用、基础设施及入口分包；测试保留在 `tests/`。行情与财务复用 `src/quant_agent/infrastructure/persistence/store.py`
