@@ -55,7 +55,7 @@
 
 事件特征相对自然日组平均只增0.67个百分点，2018H1反而下降3.89个百分点，**未通过事先规定的平均至少增1个百分点、任一窗口退化不超过1个百分点的门槛**，也未超过星期参考。故拒绝替换冻结提交，不继续在同批窗口追调参数。置信度高：本轮配置上的负面结果明确；不能据此断言所有事件时钟方法都无效。
 
-代码为 `src/competition_event_clock.py`，测试 `tests/test_competition_event_clock.py`；新增文件不修改D3四个冻结模块。新增3例测试验证未来扰动/前缀一致、重复行不增加事件观测、训练内分支及坏日期拒绝。探索driver及完整记录位于忽略的 `state/competitions/stock-price-predictor/event_clock_probe.py` 和 `event-clock-probe/`，含冻结源码/协议哈希及每窗逐行预测。原始数据与D3提交SHA保持不变。
+代码为 `src/quant_agent/competitions/stock_price/event_clock.py`，测试 `tests/test_competition_event_clock.py`；新增文件不修改D3四个冻结模块。新增3例测试验证未来扰动/前缀一致、重复行不增加事件观测、训练内分支及坏日期拒绝。探索driver及完整记录位于忽略的 `state/competitions/stock-price-predictor/event_clock_probe.py` 和 `event-clock-probe/`，含冻结源码/协议哈希及每窗逐行预测。原始数据与D3提交SHA保持不变。
 
 ## 复核当时的上传状态：命令正确，尚缺认证
 

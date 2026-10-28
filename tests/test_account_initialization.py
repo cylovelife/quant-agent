@@ -10,6 +10,8 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from quant_agent.infrastructure.configuration import load_policy
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -56,9 +58,7 @@ def test_cli_initializes_once_and_rejects_changed_origin(tmp_path):
     assert invoke(path).returncode == 2
     with sqlite3.connect(tmp_path / "account.db") as db:
         assert (
-            db.execute(
-                "SELECT count(*) FROM paper_events WHERE kind='opening_cash'"
-            ).fetchone()[0]
+            db.execute("SELECT count(*) FROM paper_events WHERE kind='opening_cash'").fetchone()[0]
             == 1
         )
 
@@ -93,9 +93,7 @@ def test_concurrent_same_account_books_one_opening(tmp_path):
     with sqlite3.connect(tmp_path / "account.db") as db:
         assert db.execute("SELECT count(*) FROM paper_accounts").fetchone()[0] == 1
         assert (
-            db.execute(
-                "SELECT count(*) FROM paper_events WHERE kind='opening_cash'"
-            ).fetchone()[0]
+            db.execute("SELECT count(*) FROM paper_events WHERE kind='opening_cash'").fetchone()[0]
             == 1
         )
 
@@ -136,11 +134,11 @@ def test_retry_after_cash_flow_does_not_reset_account(tmp_path):
 
 def test_failed_staged_initialization_publishes_nothing(tmp_path, monkeypatch):
     sys.path.insert(0, str(ROOT / "src"))
-    import execution
-    import paper_ledger
     import pytest
 
-    policy = execution.load_policy(ROOT / "params/execution_v1.json")
+    import quant_agent.application.paper.ledger as paper_ledger
+
+    policy = load_policy(ROOT / "params/execution_v1.json")
 
     def fail(*args, **kwargs):
         raise RuntimeError("injected failure")

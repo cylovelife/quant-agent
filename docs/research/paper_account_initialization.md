@@ -37,7 +37,7 @@
 .venv/bin/python tests/offline_long.py
 .venv/bin/python tests/offline_ml.py
 # 四项均通过
-.venv/bin/ruff check tests/test_corporate_actions.py tests/test_account_initialization.py src/paper_ledger.py src/execution_cli.py
+.venv/bin/ruff check tests/test_corporate_actions.py tests/test_account_initialization.py src/quant_agent/application/paper/ledger.py src/quant_agent/entrypoints/execution.py
 # 通过
 ```
 

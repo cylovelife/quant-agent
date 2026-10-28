@@ -33,3 +33,7 @@ Kaggle最初因账号未完成手机验证返回403。用户完成验证后，�
 原本地main位于`/Users/cylove0330/Documents/tech/mydev/quant-agent`，含未跟踪的`docs/competitions/`；本次未在那里拉取、切换或覆盖文件。其既有冻结运行版本保留。新增src模块会改变全src代码指纹，日后更新运行代码应沿用版本衔接规则，不排除竞赛文件或修改门禁来伪装旧版本。
 
 本次合入实际技能：git-workflow、finishing-a-development-branch、verification-before-completion；实际规则：项目AGENTS、skills-index、engineering-workflow、Python code-style/data-runtime、anti-hallucination。现有Harness足以约束隔离和验证，无须修改工程规则。
+
+## 包结构整理后的当前入口
+
+随后对全部src进行了包结构重构，当前入口为`src/quant_agent/`，开发分支为`codex/package-architecture`，合入目标仍为main。此前44/53项及15项源码哈希对应初次交付时点；当前验收为428项pytest、四项离线自检、构造端到端与缓存等价、wheel安装入口和相同CSV的确定性复现，详见[包结构说明](../architecture/package_layout.md)。旧哈希清单单独保存，不回填原记录。Kaggle公开版本4已同步这些包路径及源码，25个Markdown单元格回读逐字一致，0个可执行单元；未提交新预测。

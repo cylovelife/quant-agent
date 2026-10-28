@@ -5,7 +5,6 @@
 
 import json
 import sqlite3
-import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -13,10 +12,13 @@ import pandas as pd
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
 
-from research_tracking import create_watch, evaluate_watch, compare_priorities  # noqa: E402
-import daily_research  # noqa: E402
+import quant_agent.application.research.daily as daily_research  # noqa: E402
+from quant_agent.application.research.tracking import (  # noqa: E402
+    compare_priorities,
+    create_watch,
+    evaluate_watch,
+)  # noqa: E402
 
 
 @pytest.fixture
@@ -110,8 +112,7 @@ def test_condition_reversal_and_support_break_are_distinct(params):
 def test_missing_or_revised_data_is_not_a_false_invalidation(params):
     origin = watch(params)
     assert {
-        s["status"]
-        for s in evaluate_watch(origin, None, "2026-10-21")["signals"].values()
+        s["status"] for s in evaluate_watch(origin, None, "2026-10-21")["signals"].values()
     } == {"unavailable"}
     frame = append(bars(), "2026-10-21", 10.3)
     frame.loc[20, "close"] += 0.01
@@ -159,12 +160,8 @@ def session(day, rankings):
 
 
 def test_ranking_changes_use_exact_previous_session_and_handle_missing_data():
-    old = session(
-        "2026-10-20", [("A", 1, 80), ("B", 2, 70), ("C", 3, 65), ("D", None, 50)]
-    )
-    now = session(
-        "2026-10-21", [("B", 1, 85), ("D", 2, 78), ("A", 3, 75), ("C", None, 50)]
-    )
+    old = session("2026-10-20", [("A", 1, 80), ("B", 2, 70), ("C", 3, 65), ("D", None, 50)])
+    now = session("2026-10-21", [("B", 1, 85), ("D", 2, 78), ("A", 3, 75), ("C", None, 50)])
     result = compare_priorities(now, old, "2026-10-20")
     by_code = {r["code"]: r for r in result["rows"]}
     assert by_code["A"]["status"] == "down"
@@ -177,11 +174,9 @@ def test_ranking_changes_use_exact_previous_session_and_handle_missing_data():
     assert compare_priorities(now, old, "2026-10-19")["available"] is False
     now["observations"] = [r for r in now["observations"] if r["code"] != "C"]
     assert (
-        next(
-            r
-            for r in compare_priorities(now, old, "2026-10-20")["rows"]
-            if r["code"] == "C"
-        )["status"]
+        next(r for r in compare_priorities(now, old, "2026-10-20")["rows"] if r["code"] == "C")[
+            "status"
+        ]
         == "unavailable"
     )
 
@@ -238,31 +233,19 @@ def test_daily_tracking_persists_and_is_idempotent(tmp_path, monkeypatch, params
     assert repeated["reused"] is True
     with sqlite3.connect(tmp_path / "research/ledger.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM research_watches").fetchone()[0] == 1
-        assert (
-            conn.execute("SELECT COUNT(*) FROM research_signal_checks").fetchone()[0]
-            == 1
-        )
+        assert conn.execute("SELECT COUNT(*) FROM research_signal_checks").fetchone()[0] == 1
     write_bars(db, append(bars(), "2026-10-21", 10.3))
     freeze_time(monkeypatch, "2026-10-21T18:30:00+08:00")
     second = daily_research.research_daily(*args, asof="2026-10-21")
     assert second["tracking"]["priority_changes"]["previous_date"] == "2026-10-20"
-    assert (
-        second["tracking"]["watches"][0]["evaluation"]["signals"]["price"]["status"]
-        == "met"
-    )
+    assert second["tracking"]["watches"][0]["evaluation"]["signals"]["price"]["status"] == "met"
     assert second["tracking"]["watches"][0]["high"] == 10.0
-    assert (
-        "10.000"
-        in second["research_summary"]["groups"]["cn"][0]["confirmation_signals"][0]
-    )
+    assert "10.000" in second["research_summary"]["groups"]["cn"][0]["confirmation_signals"][0]
     main = Path(second["daily_report_path"]).read_text()
     assert "确认信号逐日跟踪" in main and "已满足" in main and "上一交易日" in main
     with sqlite3.connect(tmp_path / "research/ledger.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM research_watches").fetchone()[0] == 1
-        assert (
-            conn.execute("SELECT COUNT(*) FROM research_signal_checks").fetchone()[0]
-            == 2
-        )
+        assert conn.execute("SELECT COUNT(*) FROM research_signal_checks").fetchone()[0] == 2
 
 
 def test_tracking_and_research_writes_roll_back_together(tmp_path, monkeypatch, params):
@@ -298,7 +281,7 @@ def test_tracking_and_research_writes_roll_back_together(tmp_path, monkeypatch, 
 
 
 def test_signal_columns_do_not_swap_after_json_roundtrip(params):
-    from research_report import render_tracking
+    from quant_agent.infrastructure.reporting.research import render_tracking
 
     origin = watch(params)
     result = evaluate_watch(origin, append(bars(), "2026-10-21", 10.3), "2026-10-21")
@@ -318,9 +301,7 @@ def test_signal_columns_do_not_swap_after_json_roundtrip(params):
     assert cells[4].startswith("已满足")  # MACD column
 
 
-def test_exit_then_reentry_creates_new_watch_and_retains_old_round(
-    tmp_path, monkeypatch, params
-):
+def test_exit_then_reentry_creates_new_watch_and_retains_old_round(tmp_path, monkeypatch, params):
     db = tmp_path / "bars.db"
     setup_db(db)
     write_bars(db, bars())
@@ -344,9 +325,7 @@ def test_exit_then_reentry_creates_new_watch_and_retains_old_round(
     assert current["evaluation"]["signals"]["price"]["status"] == "pending"
 
 
-def test_lagging_symbol_is_not_compared_or_falsely_closed(
-    tmp_path, monkeypatch, params
-):
+def test_lagging_symbol_is_not_compared_or_falsely_closed(tmp_path, monkeypatch, params):
     db = tmp_path / "bars.db"
     setup_db(db)
     for code in ("000001", "000002"):
@@ -360,12 +339,8 @@ def test_lagging_symbol_is_not_compared_or_falsely_closed(
     rec = daily_research.research_daily(*args, asof="2026-10-21")
     lagging = next(w for w in rec["tracking"]["watches"] if w["code"] == "000001")
     assert lagging["closed_date"] is None
-    assert {s["status"] for s in lagging["evaluation"]["signals"].values()} == {
-        "unavailable"
-    }
-    change = next(
-        r for r in rec["tracking"]["priority_changes"]["rows"] if r["code"] == "000001"
-    )
+    assert {s["status"] for s in lagging["evaluation"]["signals"].values()} == {"unavailable"}
+    change = next(r for r in rec["tracking"]["priority_changes"]["rows"] if r["code"] == "000001")
     assert change["status"] == "unavailable"
     assert change["score_delta"] is None
 
@@ -435,8 +410,7 @@ def test_volume_rounding_at_threshold_is_unknown_only_for_volume(params, delta, 
     assert result["signals"]["volume"]["status"] == "unavailable"
     assert "阈值" in result["signals"]["volume"]["evidence"]
     assert all(
-        result["signals"][key]["status"] != "unavailable"
-        for key in ("price", "macd", "trend")
+        result["signals"][key]["status"] != "unavailable" for key in ("price", "macd", "trend")
     )
 
 
@@ -448,9 +422,7 @@ def test_material_volume_revision_keeps_price_checks_but_blocks_volume(params):
     result = evaluate_watch(origin, frame, "2026-10-22")
     assert result["signals"]["volume"]["status"] == "unavailable"
     assert result["revision_review"]["volume"]["classification"] == "material_revision"
-    assert all(
-        result["signals"][key]["status"] == "met" for key in ("price", "macd", "trend")
-    )
+    assert all(result["signals"][key]["status"] == "met" for key in ("price", "macd", "trend"))
 
 
 @pytest.mark.parametrize("delta", [0.50001, 1.0])
@@ -523,22 +495,16 @@ def test_price_revision_still_blocks_every_signal(params, field):
     frame.loc[20, field] += 0.01
     frame["volume"] += 0.25
     result = evaluate_watch(origin, append(frame, "2026-10-21", 9.5), "2026-10-21")
-    assert (
-        result["invalidated_on"] is None
-    )  # revised prices must not fake a support break
+    assert result["invalidated_on"] is None  # revised prices must not fake a support break
     assert {s["status"] for s in result["signals"].values()} == {"unavailable"}
 
 
-@pytest.mark.parametrize(
-    "volume,status", [(30.0, "pending"), (60.0, "met"), (110.0, "pending")]
-)
+@pytest.mark.parametrize("volume,status", [(30.0, "pending"), (60.0, "met"), (110.0, "pending")])
 def test_half_hand_rounding_can_confirm_a_robust_volume_result(params, volume, status):
     origin = watch(params)
     frame = bars()
     frame["volume"] += 0.5
-    result = evaluate_watch(
-        origin, append(frame, "2026-10-21", 9.8, volume), "2026-10-21"
-    )
+    result = evaluate_watch(origin, append(frame, "2026-10-21", 9.8, volume), "2026-10-21")
     assert result["signals"]["volume"]["status"] == status
     assert result["revision_review"]["volume"]["max_absolute_change"] == 0.5
 
@@ -599,7 +565,7 @@ def test_zero_denominator_in_volume_interval_stays_unknown(params):
 
 
 def test_revision_audit_is_visible_after_json_roundtrip(params):
-    from research_report import render_tracking
+    from quant_agent.infrastructure.reporting.research import render_tracking
 
     origin = watch(params)
     frame = bars()
@@ -655,7 +621,5 @@ def test_daily_revision_rerun_retains_history_and_does_not_increase_evidence(
     assert repeated["tracking"] == current["tracking"]
     with sqlite3.connect(tmp_path / "research/ledger.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM research_watches").fetchone()[0] == 1
-        payload = json.loads(
-            conn.execute("SELECT payload FROM research_watches").fetchone()[0]
-        )
+        payload = json.loads(conn.execute("SELECT payload FROM research_watches").fetchone()[0])
         assert payload["history"][-1]["volume"] == 100.0

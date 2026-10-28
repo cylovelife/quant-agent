@@ -14,8 +14,9 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from quant_agent.infrastructure.configuration import load_policy
+
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
 
 
 def _account(api, day, cash, lots, market="cn", code="600000"):
@@ -24,14 +25,14 @@ def _account(api, day, cash, lots, market="cn", code="600000"):
 
 @pytest.fixture
 def api():
-    import execution
+    import quant_agent.domain.trading.execution as execution
 
     return execution
 
 
 @pytest.fixture
 def policy(api):
-    return api.load_policy(ROOT / "params/execution_v1.json")
+    return load_policy(ROOT / "params/execution_v1.json")
 
 
 @pytest.fixture
@@ -104,9 +105,7 @@ def test_buy_prices_are_adverse_tick_rounded_and_cash_includes_fees(
 def test_insufficient_cash_including_minimum_fee_does_not_shrink_order(
     api, policy, instrument, order, quote, cash
 ):
-    result = api.match_order(
-        order, instrument, quote, _account(api, quote.date, cash, ()), policy
-    )
+    result = api.match_order(order, instrument, quote, _account(api, quote.date, cash, ()), policy)
     assert result["status"] == "rejected"
     assert result["reason"] == "insufficient_cash"
     assert result["cash_delta"] == "0.00" and result["quantity_delta"] == 0
@@ -114,13 +113,9 @@ def test_insufficient_cash_including_minimum_fee_does_not_shrink_order(
     assert result["fees"]["total"] == "0.00"
 
 
-def test_exact_cash_boundary_and_gap_use_execution_open(
-    api, policy, instrument, order, quote
-):
+def test_exact_cash_boundary_and_gap_use_execution_open(api, policy, instrument, order, quote):
     state = _account(api, quote.date, "1006.01", ())
-    assert (
-        api.match_order(order, instrument, quote, state, policy)["status"] == "filled"
-    )
+    assert api.match_order(order, instrument, quote, state, policy)["status"] == "filled"
     gap = replace(quote, open_price="10.50")
     rejected = api.match_order(order, instrument, gap, state, policy)
     assert rejected["reason"] == "insufficient_cash"
@@ -131,9 +126,7 @@ def test_exact_cash_boundary_and_gap_use_execution_open(
 def test_invalid_buy_quantities_are_rejected(
     api, policy, instrument, order, quote, account, quantity
 ):
-    result = api.match_order(
-        replace(order, quantity=quantity), instrument, quote, account, policy
-    )
+    result = api.match_order(replace(order, quantity=quantity), instrument, quote, account, policy)
     assert result["status"] == "rejected"
     assert result["quantity_delta"] == 0
 
@@ -160,21 +153,21 @@ def test_sell_fee_directions_and_t_plus_one(api, policy, instrument, order, quot
 def test_odd_lot_must_sell_residual_together(api, policy, instrument, order, quote):
     held = _account(api, quote.date, "0", (api.PositionLot(250, "2026-10-23"),))
     assert (
-        api.match_order(
-            replace(order, side="sell", quantity=150), instrument, quote, held, policy
-        )["status"]
+        api.match_order(replace(order, side="sell", quantity=150), instrument, quote, held, policy)[
+            "status"
+        ]
         == "filled"
     )
     assert (
-        api.match_order(
-            replace(order, side="sell", quantity=125), instrument, quote, held, policy
-        )["status"]
+        api.match_order(replace(order, side="sell", quantity=125), instrument, quote, held, policy)[
+            "status"
+        ]
         == "rejected"
     )
     assert (
-        api.match_order(
-            replace(order, side="sell", quantity=350), instrument, quote, held, policy
-        )["status"]
+        api.match_order(replace(order, side="sell", quantity=350), instrument, quote, held, policy)[
+            "status"
+        ]
         == "rejected"
     )
 
@@ -187,9 +180,7 @@ def test_etf_has_own_tick_fees_and_settlement(api, policy, order, quote):
         market="etf",
         code="510300",
         open_price="3.456",
-        facts=replace(
-            quote.facts, lower_limit="3", upper_limit="4", market="etf", code="510300"
-        ),
+        facts=replace(quote.facts, lower_limit="3", upper_limit="4", market="etf", code="510300"),
     )
     fill = api.match_order(
         order,
@@ -281,19 +272,14 @@ def test_limit_order_and_slippage_outside_band_are_not_capped_to_fill(
     api, policy, instrument, order, quote, account
 ):
     assert (
-        api.match_order(
-            replace(order, limit_price="10.00"), instrument, quote, account, policy
-        )["reason"]
+        api.match_order(replace(order, limit_price="10.00"), instrument, quote, account, policy)[
+            "reason"
+        ]
         == "limit_not_met"
     )
     near = replace(quote, open_price="20.99")
-    narrow = replace(
-        near, facts=replace(quote.facts, lower_limit="19", upper_limit="21")
-    )
-    assert (
-        api.match_order(order, instrument, narrow, account, policy)["status"]
-        == "unfilled"
-    )
+    narrow = replace(near, facts=replace(quote.facts, lower_limit="19", upper_limit="21"))
+    assert api.match_order(order, instrument, narrow, account, policy)["status"] == "unfilled"
 
 
 @pytest.mark.parametrize(
@@ -310,9 +296,7 @@ def test_limit_order_and_slippage_outside_band_are_not_capped_to_fill(
 def test_invalid_price_identity_or_provenance_is_unavailable(
     api, policy, instrument, order, quote, account, field, value
 ):
-    result = api.match_order(
-        order, instrument, replace(quote, **{field: value}), account, policy
-    )
+    result = api.match_order(order, instrument, replace(quote, **{field: value}), account, policy)
     assert result["status"] == "unavailable"
     assert result["filled_quantity"] == 0
 
@@ -320,9 +304,7 @@ def test_invalid_price_identity_or_provenance_is_unavailable(
 def test_missing_target_session_never_advances_to_later_quote(
     api, policy, instrument, order, quote, account
 ):
-    result = api.match_order(
-        order, instrument, replace(quote, date="2026-10-28"), account, policy
-    )
+    result = api.match_order(order, instrument, replace(quote, date="2026-10-28"), account, policy)
     assert result["reason"] == "execution_session_mismatch"
     assert result["cash_delta"] == "0.00"
 
@@ -331,9 +313,9 @@ def test_order_cannot_use_same_day_signal_or_future_holdings(
     api, policy, instrument, order, quote, account
 ):
     assert (
-        api.match_order(
-            replace(order, signal_date=quote.date), instrument, quote, account, policy
-        )["status"]
+        api.match_order(replace(order, signal_date=quote.date), instrument, quote, account, policy)[
+            "status"
+        ]
         == "rejected"
     )
     future = replace(account, lots=(api.PositionLot(100, "2026-10-28"),))
@@ -343,9 +325,7 @@ def test_order_cannot_use_same_day_signal_or_future_holdings(
     )
 
 
-def test_profile_is_dated_and_not_inferred_for_star_market(
-    api, policy, order, quote, account
-):
+def test_profile_is_dated_and_not_inferred_for_star_market(api, policy, order, quote, account):
     star = api.Instrument("cn", "688001", "SSE", "cn_mainboard")
     result = api.match_order(
         replace(order, code="688001"),
@@ -373,11 +353,11 @@ def test_policy_identity_changes_with_cost_and_rejects_bad_costs(api, policy, tm
     raw["profiles"]["cn_mainboard"]["slippage_bps"] = "10"
     path = tmp_path / "policy.json"
     path.write_text(json.dumps(raw))
-    assert api.load_policy(path).policy_id != policy.policy_id
+    assert load_policy(path).policy_id != policy.policy_id
     raw["profiles"]["cn_mainboard"]["commission_rate"] = "-0.1"
     path.write_text(json.dumps(raw))
     with pytest.raises(ValueError):
-        api.load_policy(path)
+        load_policy(path)
 
 
 @pytest.fixture
@@ -393,16 +373,14 @@ def raw_frame():
             "amount": [900.0, 1000.0, 1050.0],
         }
     )
-    frame.attrs.update(
-        source="fixture", fetched_at="2026-10-28T18:00:00+08:00", adjust="raw"
-    )
+    frame.attrs.update(source="fixture", fetched_at="2026-10-28T18:00:00+08:00", adjust="raw")
     return frame
 
 
 def test_raw_adapter_ignores_close_high_low_volume_and_future_rows(
     api, instrument, order, quote, raw_frame
 ):
-    from execution_data import opening_quote
+    from quant_agent.infrastructure.persistence.execution_data import opening_quote
 
     first = opening_quote(raw_frame, instrument, order.execution_date, quote.facts)
     altered = raw_frame.copy()
@@ -419,16 +397,13 @@ def test_raw_adapter_ignores_close_high_low_volume_and_future_rows(
 def test_backtest_and_portfolio_use_same_order_model_without_writing_book(
     api, policy, instrument, order, quote, account, raw_frame
 ):
-    from backtest import replay_paper_order
-    from execution_data import opening_quote
-    from portfolio import preview_paper_order
+    from quant_agent.application.investing.portfolio import preview_paper_order
+    from quant_agent.application.research.backtest import replay_paper_order
+    from quant_agent.infrastructure.persistence.execution_data import opening_quote
 
     supplied = opening_quote(raw_frame, instrument, order.execution_date, quote.facts)
     direct = api.match_order(order, instrument, supplied, account, policy)
-    assert (
-        replay_paper_order(order, instrument, raw_frame, quote.facts, account, policy)
-        == direct
-    )
+    assert replay_paper_order(order, instrument, raw_frame, quote.facts, account, policy) == direct
     assert preview_paper_order(order, instrument, supplied, account, policy) == direct
 
 
@@ -501,24 +476,18 @@ def test_local_raw_db_cli_is_read_only_and_has_no_qfq_fallback(
 def test_holdings_of_another_symbol_cannot_fund_a_sell(
     api, policy, instrument, order, quote, account
 ):
-    mismatched = replace(
-        account, code="600519", lots=(api.PositionLot(100, "2026-10-23"),)
-    )
-    result = api.match_order(
-        replace(order, side="sell"), instrument, quote, mismatched, policy
-    )
+    mismatched = replace(account, code="600519", lots=(api.PositionLot(100, "2026-10-23"),))
+    result = api.match_order(replace(order, side="sell"), instrument, quote, mismatched, policy)
     assert result["reason"] == "account_instrument_mismatch"
 
 
 def test_weekly_raw_open_cannot_be_used_as_daily_execution_open(
     instrument, order, quote, raw_frame
 ):
-    from data_quality import capture_provenance
-    from execution_data import opening_quote
+    from quant_agent.domain.market.quality import capture_provenance
+    from quant_agent.infrastructure.persistence.execution_data import opening_quote
 
     metadata = capture_provenance(raw_frame, instrument.market, instrument.code, "raw")
     metadata["aggregation"] = {"frequency": "1w"}
     raw_frame.attrs["data_provenance"] = metadata
-    assert opening_quote(
-        raw_frame, instrument, order.execution_date, quote.facts
-    ).issues
+    assert opening_quote(raw_frame, instrument, order.execution_date, quote.facts).issues

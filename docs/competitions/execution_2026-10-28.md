@@ -53,9 +53,9 @@
 以下保留原实施顺序；D3实际已实现 competition_data / validation / metrics / baseline，测试集中在 test_competition_pipeline.py。原设计 runner 未另设模块，不声称完整全局实验注册或预算服务已实现。具体入口和证据见[第3天记录](day3_stock_price_predictor.md)。
 
 1. **隔离环境和 manifest。** 检查当前工作区与运行指纹，创建/复用隔离 checkout；不复制真实 `state/` 账本。竞赛依赖单独锁定；xlsx解析库按真实文件需要加入，不改变现有冻结环境。产物落 `state/competitions/stock-price-predictor/`。文档和可公开代码可入Git，原始比赛数据与模型不默认上传。
-2. **`src/competition_data.py` 与 `tests/test_competition_data.py`。** 读取真实文件，建立数据 manifest，显式ID/日期/实体映射；测试大小写/工作表、列缺失、重复键、train/test重叠和未知列。保留原文件；不写现有 `store.py` 的行情表。可复用哈希工具，但不把标签表强制伪装为行情快照。
-3. **`src/competition_validation.py` 与对应测试。** 复用适用的 `temporal_validation` 纯函数；在分类标签上明确实际结束日与预测可见边界。测试同日分组、跨界purge、坏日期、未知实体、滚动预热、未来行改变不影响过去特征/预测。禁止未来标签回流。
-4. **`src/competition_metrics.py` 与对应测试。** 初期实现Accuracy与提交结构校验；测试硬标签范围、长度、行顺序、缺失值、重复ID、类别不平衡基准。实际提交列名与格式以样例为准，不能假设存在ID。Hull阶段另取官方scorer，对正常、边界和错误输入逐项核对，不复用分类scorer。
+2. **`src/quant_agent/competitions/stock_price/data.py` 与 `tests/test_competition_data.py`。** 读取真实文件，建立数据 manifest，显式ID/日期/实体映射；测试大小写/工作表、列缺失、重复键、train/test重叠和未知列。保留原文件；不写现有 `store.py` 的行情表。可复用哈希工具，但不把标签表强制伪装为行情快照。
+3. **`src/quant_agent/competitions/stock_price/validation.py` 与对应测试。** 复用适用的 `temporal_validation` 纯函数；在分类标签上明确实际结束日与预测可见边界。测试同日分组、跨界purge、坏日期、未知实体、滚动预热、未来行改变不影响过去特征/预测。禁止未来标签回流。
+4. **`src/quant_agent/competitions/stock_price/metrics.py` 与对应测试。** 初期实现Accuracy与提交结构校验；测试硬标签范围、长度、行顺序、缺失值、重复ID、类别不平衡基准。实际提交列名与格式以样例为准，不能假设存在ID。Hull阶段另取官方scorer，对正常、边界和错误输入逐项核对，不复用分类scorer。
 5. **`src/competition_runner.py` 与对应集成测试。** 组织基线、受控执行、哈希、耗时、失败与预算登记、候选锁定和预测打包。采用比赛专用manifest/登记适配；当前 `ExperimentRegistry.register` 绑定行情快照，不能声称可直接使用。合成集成测试须覆盖断点、重复run、预算耗尽和失败产物不被当成功。
 6. **真实小样本到完整包。** 先输出数据审计，后冻结开发/测试日期，再训练。输出可重跑命令、依赖锁、模型/预测哈希、submission与平台回执映射。优先独立入口，不急于把竞赛主流程塞入 `run.py`。只有确有共享需求再修改原入口及对应回归。
 

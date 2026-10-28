@@ -9,17 +9,17 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
-sys.path.insert(0, str(ROOT))
+from quant_agent.entrypoints.cli import main as application_main
 
-import fetcher  # noqa: E402
-import research_cli  # noqa: E402
-import store  # noqa: E402
+ROOT = Path(__file__).resolve().parents[1]
+
+import quant_agent.entrypoints.research as research_cli  # noqa: E402
+import quant_agent.infrastructure.market_data.fetcher as fetcher  # noqa: E402
+import quant_agent.infrastructure.persistence.store as store  # noqa: E402
 
 
 def test_raw_only_qfq_response_reports_adjustment_failure(monkeypatch):
-    from datasources import etf_qfq_source
+    from quant_agent.infrastructure.market_data.datasources import etf_qfq_source
 
     class Response:
         def json(self):
@@ -80,9 +80,7 @@ def test_sync_never_caches_rejected_source_rows(tmp_path, monkeypatch, defect):
             "amount": [1000.0],
         }
     )
-    frame.attrs.update(
-        source="fixture", fetched_at="2026-10-26T18:00:00+08:00", adjust="qfq"
-    )
+    frame.attrs.update(source="fixture", fetched_at="2026-10-26T18:00:00+08:00", adjust="qfq")
     if defect == "wrong_adjustment":
         frame.attrs["adjust"] = "raw"
     else:
@@ -98,10 +96,8 @@ def test_sync_never_caches_rejected_source_rows(tmp_path, monkeypatch, defect):
         store.close()
 
 
-def test_main_event_collection_does_not_replace_signal_evaluation(
-    tmp_path, monkeypatch
-):
-    import run
+def test_main_event_collection_does_not_replace_signal_evaluation(tmp_path, monkeypatch):
+    from quant_agent.application.investing import workflow as run
 
     cfg = {
         "markets": [],
@@ -131,9 +127,7 @@ def test_main_event_collection_does_not_replace_signal_evaluation(
     monkeypatch.setattr(run.csc_source, "available", lambda: False)
     monkeypatch.setattr(run.dsbase, "sources_enabled", lambda: True)
     monkeypatch.setattr(run.aks, "collect_fund_flow", lambda **k: {"ok": True})
-    monkeypatch.setattr(
-        run.ake, "collect_all", lambda *a, **k: {"ok": True, "lhb": {"rows": 20}}
-    )
+    monkeypatch.setattr(run.ake, "collect_all", lambda *a, **k: {"ok": True, "lhb": {"rows": 20}})
     monkeypatch.setattr(run.msel, "save_result", lambda *a: "fixture")
     monkeypatch.setattr(run, "drain_missing", lambda: [])
     monkeypatch.setattr(fetcher, "drain_fallbacks", lambda: [])
@@ -146,20 +140,16 @@ def test_main_event_collection_does_not_replace_signal_evaluation(
     monkeypatch.setattr(run.rpt, "generate_report", render)
     monkeypatch.setattr(run, "_save_manifest", lambda *a, **k: None)
     monkeypatch.setattr(sys, "argv", ["run.py", "--mode", "short"])
-    run.main()
+    application_main()
     assert seen["evaluation"] == evaluation
 
 
-def test_invalid_source_date_is_rejected_without_losing_other_symbols(
-    tmp_path, monkeypatch
-):
+def test_invalid_source_date_is_rejected_without_losing_other_symbols(tmp_path, monkeypatch):
     class Response:
         def json(self):
             return {
                 "data": {
-                    "sh600519": {
-                        "qfqday": [["not-a-date", "10", "10", "11", "9", "100", "1000"]]
-                    }
+                    "sh600519": {"qfqday": [["not-a-date", "10", "10", "11", "9", "100", "1000"]]}
                 }
             }
 
@@ -169,7 +159,7 @@ def test_invalid_source_date_is_rejected_without_losing_other_symbols(
 
 
 def test_margin_normalizer_preserves_each_sources_actual_date():
-    from datasources.akshare_events import normalize_margin
+    from quant_agent.infrastructure.market_data.datasources.akshare_events import normalize_margin
 
     frame = pd.DataFrame(
         {
@@ -185,6 +175,6 @@ def test_margin_normalizer_preserves_each_sources_actual_date():
 
 @pytest.mark.parametrize("value", ["2026-02-30", "20261301", "2026-00-12"])
 def test_event_dates_must_be_real_calendar_dates(value):
-    from datasources.base import norm_date
+    from quant_agent.infrastructure.market_data.datasources.base import norm_date
 
     assert norm_date(value) is None

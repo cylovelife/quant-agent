@@ -36,6 +36,7 @@
 ```bash
 uv venv --python python3.11 .venv
 uv pip sync --python .venv/bin/python --require-hashes requirements.lock
+uv pip install --python .venv/bin/python --no-deps -e .
 .venv/bin/python run.py --daily           # 同步固定观察池 → 冻结数据 → 因子体检 → 台账
 .venv/bin/python run.py --daily --offline # 离线复跑；相同输入复用结论，不增加证据天数
 .venv/bin/python run.py --sync-data       # 仅更新观察池；前复权完整窗口修订，非只追加
@@ -116,7 +117,7 @@ python run.py --full            # 强制完整版报告，覆盖 config.json 的
 | `QUANT_CSC=off` | 关闭中信建投数据源 |
 | `QUANT_AKSHARE=off` | 关闭 akshare 数据源（资金流采集整体跳过） |
 
-依赖：`pip install requests pandas numpy curl_cffi scikit-learn`
+依赖沿用上方 `requirements.lock`；包安装后可使用 `.venv/bin/quant-agent` 或 `.venv/bin/python -m quant_agent`。
 （`scikit-learn` 只被 `--ml-eval` 用到，不装不影响主流程）。
 `akshare` 是**可选依赖**：只被资金流采集用到，不装时该数据源自动跳过、
 主流程照常走完（`--akshare-probe` 会告诉你是没装还是连不上）。
@@ -170,58 +171,37 @@ K 线与参数未变时那三段重计算会命中缓存，**降到约 1~2 分�
 
 ## 目录结构
 
+```text
+pyproject.toml                  包配置、quant-agent CLI、pytest / ruff
+run.py                          保留原命令的轻量启动器
+src/quant_agent/
+  domain/
+    market/                     指标、行情准入、规范序列化
+    trading/                    纯成交规则、标签语义
+    strategies/                 短线、价值与宏观纯评分
+    research/                   时间验证、IC统计、离场模型、ML验证
+  application/
+    investing/                  投资编排、标的分析、持仓、复盘
+    research/                   每日研究、跟踪、实验、选型、回放
+    paper/                      纸面账本、公司行动、日结、实验及版本衔接用例
+    data_contracts.py            准入结论与快照的持久化用例
+  infrastructure/
+    persistence/                SQLite、LocalData、快照与阶段缓存
+    market_data/                行情、财务、宏观及各来源护栏/适配器
+    reporting/                  Markdown / HTML 报告
+    configuration.py            文件配置加载
+  entrypoints/                  CLI 参数、命令分派与装配
+  competitions/stock_price/     首赛数据契约、模型、指标、提交复现
+  runtime/                      工作区定位与代码指纹
+config.json                     行为配置
+params/                         策略参数与执行假设
+state/, reports/, logs/         本地运行产物，不提交
+tests/                         回归测试与离线/构造集成检查
 ```
-run.py                 主控入口（--mode short|long|all / --quick / --no-replay / --no-cache / --market）
-config.json            市场开关、粗筛参数、基金观察池、长期轨与选型开关
-params/params.json     策略参数（短线六因子权重、长期六维权重），每日迭代并留存版本
 
-── 短线轨 ──────────────────────────────────────────────
-src/fetcher.py         多源行情抓取（腾讯+东财+天天基金，含降级与限流熔断）
-src/indicators.py      技术指标（RSI/MACD/BOLL/ATR/量比/共线诊断）
-src/strategy.py        粗筛 + 六因子低买评分
-src/backtest.py        单标的低吸回测 + 截面 IC
-src/factor_eval.py     滚动因子评估（IC/ICIR/Rank IC/Rank ICIR）
-src/exit_model.py      离场决策：马尔可夫状态表 + 期望值函数 + 规则体检
-src/portfolio.py       虚拟持仓账本（建仓/逐日结算/平仓流水）
-src/evaluate.py        昨日复盘 + 权重在线更新（贝叶斯式）
-src/model_select.py     模型选型：短线离场规则 walk-forward + 长期权重方案对比
-src/phase_cache.py      重计算阶段的内容寻址缓存（离场模型/规则体检/选型）
-
-── 长期轨 ──────────────────────────────────────────────
-src/fundamentals.py    估值(PE/PB/市值)、东财 F10 财报、分红、不复权K线、基金档案
-src/macro.py           宏观环境五维评分（PMI/CPI/货币/利率/风险偏好）
-src/value_strategy.py  长期标的池（分层抽样）+ 六维价值评分 + 基金评分
-src/value_track.py     长期推荐落盘、5/20/60/120/250 日跟踪与基准超额、历史回放
-src/ml_eval.py         走前 ML 验证层（expanding window + purge + 置换检验；只验证不接入）
-
-── 数据层 ──────────────────────────────────────────────
-src/store.py           统一落盘层（SQLite：行情/财务/榜单/指数估值/行业排名/资金流/宏观/ML结论/数据源健康）
-src/csc_source.py      中信建投数据源（财务兜底、指数估值、行业排名、公司资料）
-src/datasources/       新增数据源适配层（Phase 1）
-  base.py                护栏：限速 / 按时长熔断 / 按源熔断 / 失败分类 / 健康画像 /
-                         缺失留痕 + 跨源归一（代码补零 / 日期归一 / 紧凑日期）
-  akshare_source.py      个股资金流（同花顺，全市场截面）
-  akshare_events.py      龙虎榜 / 两融 / 解禁 / 退市清单（统一走护栏，不裸调第三方库）
-  sina_source.py         新浪系现货列表（ETF / 港股）：降级链的第三档，给的是**全量**
-
-── 输出 ────────────────────────────────────────────────
-src/report.py          Markdown + HTML 报告（章节按 mode 动态编排）
-reports/               每日报告 report_YYYY-MM-DD.md/.html
-state/                 推荐存档、持仓账本、成交流水、滚动收益样本、
-                       长期推荐与跟踪、回放缓存、运行快照 manifest
-state/quant.db         结构化落盘（SQLite，见「数据落盘」章节）
-state/cache/           文件缓存（当日快照 / 阶段缓存 / 财务 / 不复权K线）
-tests/offline_e2e.py   短线轨离线自检（15 组：账本幂等 / 卖出分层 / 报告渲染 / 迭代完整性 /
-                       复盘新鲜度 / 调权证据门禁 / 阶段缓存与心跳 / 选型口径）
-tests/offline_long.py  长期轨离线自检（42 项：宏观 / 评分 / 回放 / 选型 / 报告编排）
-tests/offline_store.py 落盘层自检（幂等 / 增量 / 复用判据 / 财务双源 / 指数窗口 / 失败分类 / 降级隔离 / 回退模式）
-tests/offline_datasources.py 新增数据源自检（口径归一 / 幂等与修订 / 失败分类 / 熔断语义 /
-                       同日复用 / 事件类日期格式与「上游回空≠源故障」/ 两融 T+1 日历与补漏 /
-                       降级不报错）
-tests/offline_ml.py    走前 ML 层自检（无泄漏不变量 / purge 契约 / 信号与噪声 / 置换检验 / 门禁）
-tests/verify_phase_cache.py  阶段缓存等价性验证（固定输入，比对「命中缓存 vs 完整重算」）
-logs/                  运行日志
-```
+[领域边界、安装方式与迁移验证](docs/architecture/package_layout.md)；
+[所有旧模块到新包的映射](docs/architecture/module_migration.json)；
+[竞赛代码入口](docs/competitions/CODE_MAP.md)。
 
 ---
 

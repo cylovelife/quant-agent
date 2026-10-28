@@ -1,5 +1,5 @@
 {
-  "scope": "owned competition implementation, tests and verbatim historical drivers; excludes data, predictions, credentials and third-party code",
+  "scope": "current packaged competition implementation, package initializers, tests and verbatim historical drivers; excludes data, predictions, credentials and unrelated investment code",
   "files": [
     {
       "path": "docs/competitions/source_history/arx_probe.py.txt",
@@ -22,59 +22,70 @@
       "kind": "historical_snapshot"
     },
     {
-      "path": "src/competition_baseline.py",
-      "sha256": "91225fea7de517d879fe6eaacf7e8934bfb193d97c952b9526d5e3ff88bc0b8d",
+      "path": "src/quant_agent/competitions/stock_price/baseline.py",
+      "sha256": "b35513214268186e93c8ffc346b8bf3b09d879f40bf1311d9f506ffd4fdde097",
       "kind": "source"
     },
     {
-      "path": "src/competition_data.py",
-      "sha256": "01fe4e6c21e1bf96297ddefc6af65c9d8a0f00686ac1273c11fb69c420eeca2e",
+      "path": "src/quant_agent/competitions/stock_price/data.py",
+      "sha256": "00b0ae64e9b794a5dd7c4750ae710a67af15422dba1bf1b26c5203a99b0fc3b3",
       "kind": "source"
     },
     {
-      "path": "src/competition_event_clock.py",
-      "sha256": "e3e33ecc54b6f348568924350be0f2fd52eaedb15bfd0966b698a46f01cbc765",
+      "path": "src/quant_agent/competitions/stock_price/event_clock.py",
+      "sha256": "edbe815c8b1b3db5d6f513c7899302f9de19a0c2ad07c07801f2f3b2383cdbb9",
       "kind": "source"
     },
     {
-      "path": "src/competition_metrics.py",
-      "sha256": "e7dc05196406d3b471abff4e64bf35bdf7d493fa53cc1bf1c715d7c0bb607311",
+      "path": "src/quant_agent/competitions/stock_price/metrics.py",
+      "sha256": "f7fae17812ed877ea609d0208815336aaa6b3372015fd7e279a04ec8693b5642",
       "kind": "source"
     },
     {
-      "path": "src/competition_reproduce.py",
-      "sha256": "0dcce37b6fa19c9e1dbe9a0620df6b297c95da4ed63fb02c6a1c484841dff493",
+      "path": "src/quant_agent/competitions/stock_price/reproduce.py",
+      "sha256": "b719a468ba5b7879165a926c1d8fe5c298d16a7ef2fc1fa08204745f97828460",
       "kind": "source"
     },
     {
-      "path": "src/competition_submission.py",
-      "sha256": "bcb0797d4a409889b8a27973a5a44b240cb25fbbeb6085f19c03152291754305",
+      "path": "src/quant_agent/competitions/stock_price/submission.py",
+      "sha256": "e805d609019c5224ffd6966daaa2c21387932bdc725d72af35baf8246c599f6e",
       "kind": "source"
     },
     {
-      "path": "src/competition_timeseries.py",
-      "sha256": "b13ee8ce8bd6f4764a1e196fd84f893757bd65ad9794e03ab24f8c29c283ddbe",
+      "path": "src/quant_agent/competitions/stock_price/timeseries.py",
+      "sha256": "abf8ec2464ce3951d42b0ac4d0d5224d81df418363ae851d0915b80fa78cabde",
       "kind": "source"
     },
     {
-      "path": "src/competition_validation.py",
+      "path": "src/quant_agent/competitions/stock_price/validation.py",
       "sha256": "d240248365b91ee746db55a52900f4359641d64386bde0ca4940b87f9de089e8",
       "kind": "source"
     },
     {
       "path": "tests/test_competition_event_clock.py",
-      "sha256": "fdcd1d92dc7ce1a59be4b367b936d13055f77b7cb50c6313c090dc26ff0ab221",
+      "sha256": "681b8b74ba871223bce7f4cfac8ef585917a72d5dc2cc1f1605507d1661ddc10",
       "kind": "test"
     },
     {
       "path": "tests/test_competition_pipeline.py",
-      "sha256": "1a30c77364331629e8f1afb935dd8595990c5c3423abeead5a165f61e40d1b6a",
+      "sha256": "b12bccc00662f0d26c32c1a366ce768c8a67c17c70f951602217136457f8c830",
       "kind": "test"
     },
     {
       "path": "tests/test_competition_timeseries.py",
-      "sha256": "d7f99911bb98cf67fb684085da28c91f9d184f4e5f05fb5f8d039648fdc25694",
+      "sha256": "52c6fe2e914c858c73083e4a8fa7910b62517d8adcbbe96937a15f5f4b829061",
       "kind": "test"
+    },
+    {
+      "path": "src/quant_agent/competitions/__init__.py",
+      "sha256": "44a7a4dba02af0b8ecf3a3a63fcccf044f321c7b8bf7190fce96b330a703936a",
+      "kind": "source"
+    },
+    {
+      "path": "src/quant_agent/competitions/stock_price/__init__.py",
+      "sha256": "468c3169dff2e22193f052d65f4c4a3e1cdf28f8ff47f9b2fd8e71050123e708",
+      "kind": "source"
     }
-  ]
+  ],
+  "historical_manifest": "docs/competitions/source_history/code_manifest_before_packages.json"
 }

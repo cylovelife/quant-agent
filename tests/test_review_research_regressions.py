@@ -12,18 +12,15 @@ import numpy as np
 import pandas as pd
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-import exit_model as em  # noqa: E402
-import ml_eval  # noqa: E402
-import model_select as ms  # noqa: E402
-import phase_cache as pc  # noqa: E402
+import quant_agent.application.research.model_selection as ms  # noqa: E402
+import quant_agent.domain.research.exit_model as em  # noqa: E402
+import quant_agent.domain.research.ml_eval as ml_eval  # noqa: E402
+import quant_agent.infrastructure.persistence.phase_cache as pc  # noqa: E402
 
 
 def parameters():
     return {
-        "weights": dict.fromkeys(
-            ("boll", "rsi", "volume", "trend", "macd", "drawdown"), 1 / 6
-        ),
+        "weights": dict.fromkeys(("boll", "rsi", "volume", "trend", "macd", "drawdown"), 1 / 6),
         "score_threshold": 0.0,
         "indicators": {"rsi_n": 14},
         "backtest": {"hold_days": 5, "stop_loss": None, "take_profit": None},
@@ -65,9 +62,7 @@ def selection_config():
     ("threshold", "statistic", "expected"),
     [(-2.0, -1.2, "WATCH"), (-2.0, -2.1, "SELL"), (None, None, "SELL")],
 )
-def test_live_exit_uses_same_selected_gate_as_policy_simulation(
-    threshold, statistic, expected
-):
+def test_live_exit_uses_same_selected_gate_as_policy_simulation(threshold, statistic, expected):
     state = {"n": 100, "v": -0.01, "v_t": statistic}
     key = em.state_key(2, em._rbucket(0.01), 0)
     model = {
@@ -88,9 +83,7 @@ def test_live_exit_uses_same_selected_gate_as_policy_simulation(
     params["backtest"].update(stop_loss=-0.05, take_profit=0.08)
     live = em.exit_advice([position], model, params)[0]
     paths = [pd.DataFrame([{"d": 2, "ret0": 0.01, "ret_expire": -0.02, "score": 70}])]
-    simulated = em._simulate(
-        paths, model["states"], {}, [], 0.0, 20, True, 5, threshold
-    )
+    simulated = em._simulate(paths, model["states"], {}, [], 0.0, 20, True, 5, threshold)
     assert live["advice"] == expected
     assert (simulated["early_exit_ratio"] > 0) == (expected == "SELL")
 
@@ -101,24 +94,19 @@ def test_live_exit_uses_same_selected_gate_as_policy_simulation(
 )
 def test_exit_evaluation_counts_initial_capital_in_drawdown(returns, drawdown):
     paths = [
-        pd.DataFrame([{"d": 1, "ret0": 0.0, "ret_expire": value, "score": 70}])
-        for value in returns
+        pd.DataFrame([{"d": 1, "ret0": 0.0, "ret_expire": value, "score": 70}]) for value in returns
     ]
     result = em._simulate(paths, {}, {}, [], 0.0, 20, False, 5)
     assert result["max_dd"] == pytest.approx(drawdown)
 
 
 def test_disabled_stops_and_targets_are_accepted_by_exit_advice():
-    result = em.exit_advice(
-        [{"code": "fixture", "days_held": 1, "ret": -0.10}], None, parameters()
-    )
+    result = em.exit_advice([{"code": "fixture", "days_held": 1, "ret": -0.10}], None, parameters())
     assert result[0]["advice"] == "HOLD"
 
 
 def test_scan_keeps_full_current_horizon_when_grid_is_shorter():
-    result = em.parameter_scan(
-        {("etf", "fixture"): prices()}, parameters(), horizons=(1,)
-    )
+    result = em.parameter_scan({("etf", "fixture"): prices()}, parameters(), horizons=(1,))
     assert result["current"] == {"horizon": 5, "stop": None, "take": None}
     assert result["baseline"]["avg"] > 0.0
     assert result["by_horizon"][0]["avg"] == 0.0
@@ -126,18 +114,14 @@ def test_scan_keeps_full_current_horizon_when_grid_is_shorter():
 
 def test_signal_collection_includes_last_fully_matured_label():
     frame = prices().iloc[:100].copy()
-    signals = em._collect_signals(
-        {("etf", "fixture"): frame}, parameters(), 5, with_date=True
-    )
+    signals = em._collect_signals({("etf", "fixture"): frame}, parameters(), 5, with_date=True)
     assert len(signals) == len(frame) - 5 - em.WARMUP
     assert signals[-1][0] == str(frame.date.iloc[-6])[:10]
     assert signals[-1][3] == str(frame.date.iloc[-1])[:10]
 
 
 def test_short_selection_keeps_full_current_horizon_when_grid_is_shorter():
-    result = ms.select_short(
-        selection_config(), parameters(), {("etf", "fixture"): prices()}
-    )
+    result = ms.select_short(selection_config(), parameters(), {("etf", "fixture"): prices()})
     assert result is not None
     assert result["current"]["hold_days"] == 5
     assert result["current_stats"]["avg_days"] == 5.0
@@ -145,9 +129,7 @@ def test_short_selection_keeps_full_current_horizon_when_grid_is_shorter():
     assert result["folds"][0]["oos_current"]["avg_days"] == 5.0
 
 
-def test_indicator_parameters_invalidate_each_dependent_phase_cache(
-    tmp_path, monkeypatch
-):
+def test_indicator_parameters_invalidate_each_dependent_phase_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(pc, "CACHE_DIR", str(tmp_path))
     params = parameters()
     changed = copy.deepcopy(params)
@@ -237,12 +219,11 @@ def test_ml_and_rule_compare_identical_evaluable_test_dates():
     assert first["candidates"]["ridge"]["n_periods"] == len(test_dates) - 2
 
 
-def test_phase_verifier_rejects_missing_boundaries_before_reading_price_cache(
-    monkeypatch, capsys
-):
+def test_phase_verifier_rejects_missing_boundaries_before_reading_price_cache(monkeypatch, capsys):
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parent))
     import verify_phase_cache as verifier
-    import run
+
+    from quant_agent.application.investing import workflow as run
 
     monkeypatch.setattr(sys, "argv", ["verify_phase_cache.py"])
     monkeypatch.setattr(run, "load_configs", lambda: (parameters(), {}))
@@ -256,12 +237,11 @@ def test_phase_verifier_rejects_missing_boundaries_before_reading_price_cache(
     assert "固定" in capsys.readouterr().out
 
 
-def test_phase_verifier_does_not_pass_when_all_stages_return_no_result(
-    monkeypatch, capsys
-):
+def test_phase_verifier_does_not_pass_when_all_stages_return_no_result(monkeypatch, capsys):
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parent))
     import verify_phase_cache as verifier
-    import run
+
+    from quant_agent.application.investing import workflow as run
 
     original_params, original_cfg = parameters(), {}
     before = copy.deepcopy(original_params)

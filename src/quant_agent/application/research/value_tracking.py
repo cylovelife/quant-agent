@@ -1,0 +1,567 @@
+# -*- coding: utf-8 -*-
+"""长期价值轨：推荐存档、前向跟踪、按披露日期过滤的描述性历史回放。
+
+三件事：
+
+1. **推荐存档**（save_picks）——每日长期推荐连六维分数一起落盘，
+   供未来验证。分数必须存下来，否则明天无法回答「得分高的到底跑赢了没有」。
+
+2. **前向跟踪**（settle_tracking）——对每批历史推荐，按里程碑
+   5/20/60/120/250 个交易日计算收益，并同时算基准（沪深300ETF 510300）
+   同期收益，得到**超额收益**。长期投资只看绝对收益会被市场 beta 骗，
+   必须看超额。
+
+3. **描述性历史回放**（historical_replay）——在历史时点按披露日期过滤六维分输入，
+   再看后续 20/60/120 日收益，算截面 IC。财务数值的历史修订版本尚未完整保存，
+   不能证明完整的当时可见数据或无前视。已有三条过滤约束：
+     a. 财务只取实际披露日期 `NOTICE_DATE < t` 的报告期——日期无盘中时间时保守等待次日，
+        否则会用上还没公布的业绩；
+     b. 估值分位只用 t 之前的 K 线，且用**不复权**价（前复权会篡改历史）；
+     c. IC 必须**先按交易日分组**再算相关，直接对混合样本求相关会把
+        截面差异误当预测力（qlib/contrib/eva/alpha.py::calc_ic 的口径）。
+
+历史回放的宏观维度刻意不参与：宏观择时对长期选股的增量贡献远小于选股本身，
+且公布值序列的时点对齐容易出错，与其做一个半可信的版本，不如边界划干净。
+"""
+
+import csv
+import glob
+import json
+import os
+from datetime import date, datetime
+
+import numpy as np
+import pandas as pd
+
+import quant_agent.application.investing.value_screening as vs
+import quant_agent.infrastructure.market_data.fundamentals as fd
+from quant_agent.domain.market.quality import financial_available_date
+from quant_agent.domain.research.statistics import (
+    _rank_corr as _rank_corr,
+)
+from quant_agent.domain.research.statistics import (
+    cross_section_ic as cross_section_ic,
+)
+from quant_agent.runtime.paths import WORKSPACE_ROOT
+
+ROOT = str(WORKSPACE_ROOT)
+STATE = os.path.join(ROOT, "state")
+LONGS_DIR = os.path.join(STATE, "longterm")
+
+OUTCOMES = os.path.join(STATE, "longterm_outcomes.csv")
+FACTORS_6 = ["v_quality", "v_growth", "v_cashflow", "v_balance", "v_valuation", "v_macro"]
+FACTORS_CORE = ["v_quality", "v_growth", "v_cashflow", "v_balance", "v_valuation"]
+MILESTONES_DEFAULT = [5, 20, 60, 120, 250]
+
+
+# ---------------------------------------------------------------------------
+# 1) 推荐存档
+# ---------------------------------------------------------------------------
+def save_picks(picks: dict, macro_env: dict, date_str: str = None) -> str:
+    """落盘当日长期推荐（含宏观环境与全部因子分）。"""
+    d = date_str or date.today().isoformat()
+    path = os.path.join(STATE, f"longterm_picks_{d}.json")
+    stocks = picks.get("stocks")
+    funds = picks.get("funds")
+    rec = {
+        "date": d,
+        "ts": datetime.now().isoformat(),
+        "macro": {
+            k: macro_env.get(k)
+            for k in (
+                "score",
+                "label",
+                "equity_stance",
+                "style_bias",
+                "missing",
+                "items",
+                "pmi",
+                "cpi",
+                "money",
+                "market",
+            )
+        },
+        "stats": picks.get("stats"),
+        "stocks": (
+            stocks.to_dict("records")
+            if isinstance(stocks, pd.DataFrame) and not stocks.empty
+            else []
+        ),
+        "funds": (
+            funds.to_dict("records") if isinstance(funds, pd.DataFrame) and not funds.empty else []
+        ),
+    }
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(rec, f, ensure_ascii=False, indent=2, default=str)
+    return path
+
+
+def load_history(before: str = None) -> list:
+    files = sorted(glob.glob(os.path.join(STATE, "longterm_picks_*.json")))
+    out = []
+    for p in files:
+        d = os.path.basename(p).split("longterm_picks_")[-1][:10]
+        if before and d >= before:
+            continue
+        try:
+            with open(p, encoding="utf-8") as f:
+                out.append(json.load(f))
+        except Exception:
+            continue
+    return out
+
+
+# ---------------------------------------------------------------------------
+# 2) 前向跟踪结算
+# ---------------------------------------------------------------------------
+def _index_on_or_after(k: pd.DataFrame, d: str):
+    if k is None or k.empty:
+        return None
+    dates = k["date"].astype(str).str.slice(0, 10)
+    return next((i for i, day in enumerate(dates) if day >= d), None)
+
+
+def _tracking_prices(frame: pd.DataFrame | None, today: str) -> pd.DataFrame | None:
+    """Keep observed closes within the evaluation date, without repairing bad histories."""
+    if frame is None or frame.empty or not {"date", "close"}.issubset(frame):
+        return None
+    days = pd.to_datetime(frame["date"], errors="coerce")
+    closes = pd.to_numeric(frame["close"], errors="coerce")
+    if (
+        days.isna().any()
+        or days.duplicated().any()
+        or not days.is_monotonic_increasing
+        or not np.isfinite(closes).all()
+        or (closes <= 0).any()
+    ):
+        return None
+    return frame.loc[days <= pd.Timestamp(today)].reset_index(drop=True)
+
+
+def price_change_observation(entry: str, exit_price: str) -> dict:
+    """Raw price change alone cannot establish total return without corporate-action coverage."""
+    from decimal import Decimal
+
+    start, end = Decimal(entry), Decimal(exit_price)
+    if not start.is_finite() or not end.is_finite() or start <= 0 or end <= 0:
+        raise ValueError("prices must be finite and positive")
+    return {
+        "price_return": float(end / start - 1),
+        "total_return": None,
+        "total_return_status": "corporate_actions_unavailable",
+    }
+
+
+def _read_tracking_outcomes() -> pd.DataFrame:
+    """Read existing evidence strictly; corruption must not create new samples."""
+    columns = [
+        "date",
+        "code",
+        "market",
+        "name",
+        "milestone",
+        "score",
+        *FACTORS_6,
+        "ret",
+        "bench_ret",
+        "excess",
+    ]
+    try:
+        with open(OUTCOMES, newline="", encoding="utf-8") as stream:
+            reader = csv.DictReader(stream, strict=True)
+            if reader.fieldnames != columns:
+                raise ValueError("invalid long-term outcomes schema; history requires recovery")
+            records = list(reader)
+    except FileNotFoundError:
+        return pd.DataFrame(columns=columns)
+    except csv.Error as exc:
+        raise ValueError("invalid long-term outcomes CSV; history requires recovery") from exc
+    if any(None in row or any(value is None for value in row.values()) for row in records):
+        raise ValueError("invalid long-term outcome row; history requires recovery")
+    frame = pd.DataFrame(records, columns=columns)
+    for row in records:
+        if (
+            not row["code"].strip()
+            or not row["market"].strip()
+            or date.fromisoformat(row["date"]).isoformat() != row["date"]
+        ):
+            raise ValueError("invalid long-term outcome identity; history requires recovery")
+    milestones = pd.to_numeric(frame["milestone"], errors="raise")
+    if not np.isfinite(milestones).all() or (milestones <= 0).any() or (milestones % 1 != 0).any():
+        raise ValueError("invalid long-term outcome milestone; history requires recovery")
+    frame["milestone"] = milestones.astype(int)
+    for column in ("ret", "bench_ret", "excess"):
+        values = pd.to_numeric(frame[column].replace("", np.nan), errors="raise")
+        if (column == "ret" and values.isna().any()) or not np.isfinite(values.dropna()).all():
+            raise ValueError("invalid long-term outcome return; history requires recovery")
+        frame[column] = values
+    if frame.duplicated(subset=["date", "code", "market", "milestone"]).any():
+        raise ValueError("duplicate long-term outcome identities; history requires recovery")
+    return frame
+
+
+def settle_tracking(kline_fn, cfg: dict, today: str = None, progress=None) -> dict:
+    """对历史长期推荐按里程碑结算收益与超额。返回汇总统计。"""
+    today = today or date.today().isoformat()
+    miles = (cfg.get("longterm", {}) or {}).get("track_milestones", MILESTONES_DEFAULT)
+    bench_code = (cfg.get("longterm", {}) or {}).get("benchmark", "510300")
+    previous = _read_tracking_outcomes()
+    hist = load_history(before=today)
+    if not hist:
+        return {
+            "batches": 0,
+            "rows": [],
+            "summary": {},
+            "return_basis": "price_change_only",
+            "total_return_status": "corporate_actions_unavailable",
+            "note": "尚无历史长期推荐（本次为首批，从下一个交易日起可结算 5 日里程碑）",
+        }
+
+    try:
+        bk = _tracking_prices(kline_fn(bench_code, "etf"), today)
+    except Exception:
+        bk = None
+    bk_dates = (
+        bk["date"].astype(str).str.slice(0, 10).tolist() if bk is not None and not bk.empty else []
+    )
+
+    rows = []
+    # 已完成结算的里程碑不重复写
+    done = set(zip(previous["date"], previous["code"], previous["market"], previous["milestone"]))
+
+    for batch in hist:
+        bdate = batch.get("date")
+        items = (batch.get("stocks") or []) + (batch.get("funds") or [])
+        for it in items:
+            code, market = str(it.get("code")), it.get("market")
+            if market == "fund":
+                continue  # 场外基金按净值单独跟踪，见下
+            try:
+                k = _tracking_prices(kline_fn(code, market), today)
+            except Exception:
+                k = None
+            if k is None or k.empty:
+                continue
+            i0 = _index_on_or_after(k, bdate)
+            if i0 is None:
+                continue
+            entry = float(k.iloc[i0]["close"])
+            if entry <= 0:
+                continue
+            for n in miles:
+                if i0 + n >= len(k):
+                    continue  # 里程碑尚未到期
+                key = (bdate, code, market, int(n))
+                if key in done:
+                    continue
+                px = float(k.iloc[i0 + n]["close"])
+                ret = px / entry - 1
+                b_ret = None
+                if bk_dates:
+                    start_day = str(k.iloc[i0]["date"])[:10]
+                    end_day = str(k.iloc[i0 + n]["date"])[:10]
+                    # Suspensions/missing bars can make the instrument's nth
+                    # observation differ from the benchmark's nth observation.
+                    if start_day in bk_dates and end_day in bk_dates:
+                        j0, j1 = bk_dates.index(start_day), bk_dates.index(end_day)
+                        b_entry = float(bk.iloc[j0]["close"])
+                        if b_entry > 0:
+                            b_ret = float(bk.iloc[j1]["close"]) / b_entry - 1
+                rows.append(
+                    {
+                        "date": bdate,
+                        "code": code,
+                        "market": market,
+                        "name": it.get("name"),
+                        "milestone": int(n),
+                        "score": it.get("score"),
+                        **{f: it.get(f) for f in FACTORS_6},
+                        "ret": round(ret, 5),
+                        "bench_ret": (round(b_ret, 5) if b_ret is not None else None),
+                        "excess": (round(ret - b_ret, 5) if b_ret is not None else None),
+                    }
+                )
+                done.add(key)
+            if progress:
+                progress(f"长期跟踪结算 {it.get('name')}", 0, 1)
+
+    if rows:
+        df = pd.DataFrame(rows)
+        os.makedirs(os.path.dirname(OUTCOMES), exist_ok=True)
+        df.to_csv(
+            OUTCOMES, mode="a", header=not os.path.exists(OUTCOMES), index=False, encoding="utf-8"
+        )
+    else:
+        df = pd.DataFrame()
+
+    # 汇总（含历史已落盘的记录）
+    summary = {}
+    allrows = pd.DataFrame(previous.to_dict("records") + rows) if rows else previous
+    if not allrows.empty:
+        for n, g in allrows.groupby("milestone"):
+            r = pd.to_numeric(g["ret"], errors="raise").dropna()
+            e = pd.to_numeric(g["excess"], errors="raise").dropna()
+            if not len(r):
+                continue
+            summary[int(n)] = {
+                "n": int(len(r)),
+                "avg_ret": round(float(r.mean()) * 100, 2),
+                "win_rate": round(float((r > 0).mean()) * 100, 1),
+                "avg_excess": (round(float(e.mean()) * 100, 2) if len(e) else None),
+                "excess_win": (round(float((e > 0).mean()) * 100, 1) if len(e) else None),
+            }
+    return {
+        "batches": len(hist),
+        "new_rows": len(rows),
+        "covered": len(df),
+        "summary": summary,
+        "return_basis": "price_change_only",
+        "total_return_status": "corporate_actions_unavailable",
+    }
+
+
+# ---------------------------------------------------------------------------
+# 3) 无前视历史回放
+# ---------------------------------------------------------------------------
+def _asof_row(rows: list, t: str):
+    """日期精度公告从次日可用；未知公告日或法定截止日代理不参与回放。"""
+    best = None
+    for r in rows or []:
+        nd = financial_available_date(r)
+        if not nd or nd >= t:
+            continue
+        if best is None or nd > best[0]:
+            best = (nd, r)
+    return best[1] if best else None, (best[0] if best else None)
+
+
+def _rows_upto(rows: list, t: str) -> list:
+    return [r for r in (rows or []) if (financial_available_date(r) or "9999-12-31") < t]
+
+
+def replay_score(rows: list, k_raw: pd.DataFrame, t: str, weights: dict = None) -> dict | None:
+    """在历史时点 t 重算五维分（不含宏观）。只用 t 之前可得的信息。"""
+    rows_t = _rows_upto(rows, t)
+    if len(rows_t) < 4:
+        return None
+    m = fd.derived_metrics(rows_t)
+    if not m or (m.get("n_annual") or 0) < 1:
+        return None
+    if k_raw is None or k_raw.empty:
+        return None
+    k = k_raw[k_raw["date"] <= pd.Timestamp(t)]
+    if len(k) < 120:
+        return None
+    price = float(k["close"].iloc[-1])
+    if price <= 0:
+        return None
+    vp = fd.valuation_percentile(k, rows_t)
+    m["pb_pct"] = vp.get("pb_pct")
+    m["px_pct"] = vp.get("px_pct")
+    eps_ttm = m.get("eps_ttm")
+    m["pe_ttm"] = (price / eps_ttm) if (eps_ttm and eps_ttm > 0) else None
+    m["price"] = price
+    m["div_yield"] = None  # 历史股息率需按时点截断分红记录，回放中不参与
+    s = vs.score_longterm(m, {}, weights)
+    # 回放不含宏观维度：把宏观的权重按比例分给其余五维
+    five = {k2: s[f"v_{k2}"] for k2 in ("quality", "growth", "cashflow", "balance", "valuation")}
+    avail = {k2: v for k2, v in five.items() if v is not None}
+    if not avail:
+        return None
+    base_w = dict(vs.DEFAULT_WEIGHTS)
+    base_w.pop("macro", None)
+    tw = sum(base_w[k2] for k2 in avail)
+    total = sum(avail[k2] * base_w[k2] for k2 in avail) / tw if tw else None
+    return {
+        "score": round(total, 1) if total is not None else None,
+        **{f"v_{k2}": round(v, 1) for k2, v in five.items()},
+        "price": price,
+        "pe_ttm": m["pe_ttm"],
+        "pb_pct": m["pb_pct"],
+        "report_date": m.get("report_date"),
+    }
+
+
+def historical_replay(
+    items: list,
+    kline_raw_fn,
+    fin_cache: dict,
+    cfg: dict,
+    params: dict,
+    n_periods: int = 26,
+    step: int = 20,
+    min_history: int = 260,
+    progress=None,
+    end_date: str | None = None,
+) -> dict:
+    """历史时点回放：产出「因子分 vs 未来收益」的截面 IC 表。
+
+    items: [{"code","name","market"}]；fin_cache: {code: rows}（未命中则现拉）
+    """
+    miles = [20, 60, 120]
+    records = []
+    for idx, it in enumerate(items):
+        code, market = str(it["code"]), it.get("market", "cn")
+        try:
+            k = kline_raw_fn(code, market)
+        except Exception:
+            k = None
+        if k is not None and end_date is not None:
+            dates = pd.to_datetime(k["date"], errors="coerce")
+            k = k.loc[dates.notna() & (dates <= pd.Timestamp(end_date))].copy()
+        if k is None or len(k) < min_history + max(miles) + 5:
+            continue
+        rows = fin_cache.get(code)
+        if rows is None:
+            rows = fd.fetch_financial(code, market)
+            fin_cache[code] = rows
+        if not rows:
+            continue
+        k = k.sort_values("date").reset_index(drop=True)
+        # 时点：从 min_history 起，每 step 个交易日一个，取最近 n_periods 个
+        idxs = list(range(min_history, len(k) - max(miles), step))[-n_periods:]
+        for i in idxs:
+            t = str(k.iloc[i]["date"])[:10]
+            sc = replay_score(rows, k.iloc[: i + 1], t, params.get("longterm", {}).get("weights"))
+            if not sc or sc.get("score") is None:
+                continue
+            entry = float(k.iloc[i]["close"])
+            if entry <= 0:
+                continue
+            rec = {
+                "date": t,
+                "code": code,
+                "name": it.get("name"),
+                "market": market,
+                **{f: sc.get(f) for f in FACTORS_CORE},
+                "score": sc["score"],
+            }
+            ok = True
+            for n in miles:
+                j = i + n
+                if j >= len(k):
+                    ok = False
+                    break
+                try:
+                    observation = price_change_observation(str(entry), str(k.iloc[j]["close"]))
+                except (ArithmeticError, ValueError):
+                    ok = False
+                    break
+                rec[f"ret_{n}"] = round(observation["price_return"], 5)
+                rec[f"label_end_ret_{n}"] = str(k.iloc[j]["date"])[:10]
+            if ok:
+                records.append(rec)
+        if progress:
+            progress(f"历史回放 {it.get('name')}", idx + 1, len(items))
+    if not records:
+        return {
+            "n_obs": 0,
+            "n_periods": 0,
+            "factors": {},
+            "milestones": {},
+            "return_basis": "raw_price_change_only",
+            "total_return_status": "corporate_actions_unavailable",
+        }
+    df = pd.DataFrame(records)
+    horizons = {}
+    for n in miles:
+        col = f"ret_{n}"
+        sub = df.dropna(subset=[col])
+        if len(sub) < 30:
+            continue
+        horizons[n] = cross_section_ic(sub, FACTORS_CORE + ["score"], col)
+    # 全局 IC（所有里程碑的合并视角，用 60 日为代表）
+    return {
+        "n_obs": int(len(df)),
+        "n_periods": int(df["date"].nunique()),
+        "return_basis": "raw_price_change_only",
+        "total_return_status": "corporate_actions_unavailable",
+        "n_symbols": int(df["code"].nunique()),
+        "date_range": [str(df["date"].min()), str(df["date"].max())],
+        "milestones": horizons,
+        "panel": df,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 4) 长期权重迭代（与短线同纪律：只认统计显著）
+# ---------------------------------------------------------------------------
+def update_longterm_weights(params: dict, min_samples: int = 40, lr: float = 0.20) -> dict:
+    """按「因子分 vs 超额收益」的截面 IC 均值与 t 值更新六维权重。
+
+    与短线轨的 update_weights 不同，这里用**超额收益**（减掉沪深300ETF）
+    做标签：长期投资里，靠市场普涨赚的钱不该记在选股模型头上。
+    显著性不达标时只做极小幅度调整（tanh 调制），避免用小样本噪声改结构。
+    """
+    if not os.path.exists(OUTCOMES):
+        return {"updated": False, "reason": "尚无长期跟踪样本"}
+    try:
+        df = pd.read_csv(OUTCOMES)
+    except Exception:
+        return {"updated": False, "reason": "读取 outcomes 失败"}
+    if "excess" not in df.columns:
+        return {"updated": False, "reason": "缺少超额收益列"}
+    df = df.dropna(subset=["excess"])
+    if len(df) < min_samples:
+        return {"updated": False, "reason": f"样本不足({len(df)}/{min_samples})"}
+    ics = cross_section_ic(df, FACTORS_6, "excess")
+    fac = ics.get("factors") or {}
+    if not fac:
+        return {"updated": False, "reason": "截面样本不足，无法算 IC"}
+
+    lt = params.setdefault("longterm", {})
+    w = {k: float(v) for k, v in (lt.get("weights") or vs.DEFAULT_WEIGHTS).items()}
+    detail = {}
+    for key in list(w.keys()):
+        col = f"v_{key}"
+        d = fac.get(col)
+        if not d:
+            detail[key] = {"ic": None, "t": None, "action": "无样本"}
+            continue
+        ic, t = d["ic_mean"], (d["t"] or 0.0)
+        conf = float(np.tanh(abs(t) / 2.0))
+        if ic < 0 and abs(t) >= 2.0:
+            w[key] = max(0.03, w[key] * 0.5)
+            act = "显著负 IC，权重减半"
+        else:
+            w[key] = max(0.03, min(0.45, w[key] * (1 + lr * conf * np.sign(ic) * abs(ic) * 10)))
+            act = f"按 IC 微调（IC={ic:+.3f}, t={t:+.2f}, 置信={conf:.2f}）"
+        detail[key] = {
+            "ic": ic,
+            "icir": d.get("icir"),
+            "t": t,
+            "positive_rate": d.get("positive_rate"),
+            "action": act,
+        }
+    s = sum(w.values())
+    w = {k: round(v / s, 4) for k, v in w.items()}
+    lt["weights"] = w
+    lt["version"] = datetime.now().strftime("%Y%m%d_%H%M")
+    params["longterm"] = lt
+    pdir = os.path.join(ROOT, "params")
+    ver = lt["version"]
+    with open(os.path.join(pdir, f"params_longterm_{ver}.json"), "w", encoding="utf-8") as f:
+        json.dump(params, f, ensure_ascii=False, indent=2)
+    with open(os.path.join(pdir, "params.json"), "w", encoding="utf-8") as f:
+        json.dump(params, f, ensure_ascii=False, indent=2)
+    return {
+        "updated": True,
+        "weights": w,
+        "detail": detail,
+        "samples": int(len(df)),
+        "version": ver,
+    }
+
+
+if __name__ == "__main__":
+    import json as _json
+
+    cfg = _json.load(open(os.path.join(ROOT, "config.json"), encoding="utf-8"))
+    print("里程碑:", cfg["longterm"]["track_milestones"])
+    r = settle_tracking(lambda c, m: None, cfg)
+    print(
+        _json.dumps({k: v for k, v in r.items() if k != "rows"}, ensure_ascii=False, default=str)[
+            :600
+        ]
+    )

@@ -3,22 +3,18 @@
 @author cylovelife
 """
 
-from datetime import datetime
 import json
-from pathlib import Path
 import sqlite3
 import sys
+from datetime import datetime
+from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
+from quant_agent.infrastructure.configuration import load_policy
 
-import execution  # noqa: E402
-import paper_experiment as exp  # noqa: E402
-import paper_runtime as runtime  # noqa: E402
-from paper_ledger import LedgerConflict, LedgerCorruption, PaperLedger  # noqa: E402
-from store import paper_connection  # noqa: E402
+ROOT = Path(__file__).resolve().parents[1]
+
 from test_paper_experiment import (  # noqa: E402
     CLOSE1,
     CLOSE2,
@@ -30,12 +26,21 @@ from test_paper_experiment import (  # noqa: E402
     spec,
 )
 
+import quant_agent.application.paper.experiment as exp  # noqa: E402
+import quant_agent.application.paper.runtime as runtime  # noqa: E402
+from quant_agent.application.paper.ledger import (  # noqa: E402
+    LedgerConflict,
+    LedgerCorruption,
+    PaperLedger,
+)
+from quant_agent.infrastructure.persistence.store import paper_connection  # noqa: E402
+
 
 @pytest.fixture
 def source(tmp_path, monkeypatch):
     monkeypatch.setattr(exp, "code_fingerprints", lambda: {"fixture.py": "a" * 64})
     path = tmp_path / "original.db"
-    policy = execution.load_policy(ROOT / "params/execution_v1.json")
+    policy = load_policy(ROOT / "params/execution_v1.json")
     exp.start_experiment(path, spec(), policy, now=NOW)
     return PaperLedger(path)
 
@@ -60,10 +65,7 @@ def switch(monkeypatch, letter="b"):
 def origin_rows(book):
     with paper_connection(book.path) as conn:
         return {
-            name: [
-                tuple(r)
-                for r in conn.execute(f'SELECT {columns} FROM "{name}" ORDER BY rowid')
-            ]
+            name: [tuple(r) for r in conn.execute(f'SELECT {columns} FROM "{name}" ORDER BY rowid')]
             for name, columns in (
                 (
                     "paper_accounts",
@@ -86,9 +88,7 @@ def active_manifest(book):
         return exp.experiment_for_account(conn, "strategy")
 
 
-def test_copy_handoff_preserves_origin_capital_and_original_file(
-    source, tmp_path, monkeypatch
-):
+def test_copy_handoff_preserves_origin_capital_and_original_file(source, tmp_path, monkeypatch):
     before = source.path.read_bytes()
     rows = origin_rows(source)
     switch(monkeypatch)
@@ -105,16 +105,12 @@ def test_copy_handoff_preserves_origin_capital_and_original_file(
     assert manifest["runtime"]["code_sha256"] == {"fixture.py": "b" * 64}
     assert manifest["code_sha256"] == {"fixture.py": "a" * 64}
     assert exp.compare(target, "study-1")["runtime"]["code_matches"]
-    assert (
-        initial(target)["strategy"]["runtime_id"] == manifest["runtime"]["runtime_id"]
-    )
+    assert initial(target)["strategy"]["runtime_id"] == manifest["runtime"]["runtime_id"]
     assert buy(target)["strategy"]["positions"][0]["quantity"] == 100
     exp.verify_runtime(active_manifest(target))
 
 
-def test_same_handoff_retry_reads_original_even_after_date_advanced(
-    source, tmp_path, monkeypatch
-):
+def test_same_handoff_retry_reads_original_even_after_date_advanced(source, tmp_path, monkeypatch):
     switch(monkeypatch)
     first = runtime.transition_copy(**request(source, tmp_path), now=NOW)
     again = runtime.transition_copy(**request(source, tmp_path), now=CLOSE2)
@@ -128,9 +124,7 @@ def test_same_handoff_retry_reads_original_even_after_date_advanced(
 
 
 @pytest.mark.parametrize("effective", ["2026-10-31", "2026-11-02"])
-def test_handoff_cannot_backdate_or_skip_unsettled_start(
-    source, tmp_path, monkeypatch, effective
-):
+def test_handoff_cannot_backdate_or_skip_unsettled_start(source, tmp_path, monkeypatch, effective):
     switch(monkeypatch)
     req = request(source, tmp_path, effective_from=effective)
     with pytest.raises((LedgerConflict, ValueError)):
@@ -138,9 +132,7 @@ def test_handoff_cannot_backdate_or_skip_unsettled_start(
     assert not Path(req["target"]).exists()
 
 
-def test_same_day_after_close_and_after_first_entry_are_rejected(
-    source, tmp_path, monkeypatch
-):
+def test_same_day_after_close_and_after_first_entry_are_rejected(source, tmp_path, monkeypatch):
     switch(monkeypatch)
     with pytest.raises(LedgerConflict):
         runtime.transition_copy(**request(source, tmp_path), now=CLOSE1)
@@ -170,9 +162,7 @@ def test_prior_sealed_days_replay_without_rewriting_and_new_days_use_new_runtime
         now=datetime(2026, 11, 2, 8, tzinfo=ZONE),
     )
     target = PaperLedger(result["path"])
-    replay = exp.settle_pair(
-        target, "study-1", "2026-11-01", None, calendar(), [], [], now=CLOSE2
-    )
+    replay = exp.settle_pair(target, "study-1", "2026-11-01", None, calendar(), [], [], now=CLOSE2)
     assert replay["strategy"] == {**closed["strategy"], "replayed": True}
     with paper_connection(target.path) as conn:
         assert [
@@ -207,9 +197,7 @@ def test_transition_chain_and_copied_prefix_are_verified(source, tmp_path, monke
         active_manifest(target)
 
 
-def test_legacy_prefix_changes_cannot_be_hidden_by_valid_runtime_row(
-    source, tmp_path, monkeypatch
-):
+def test_legacy_prefix_changes_cannot_be_hidden_by_valid_runtime_row(source, tmp_path, monkeypatch):
     switch(monkeypatch)
     result = runtime.transition_copy(**request(source, tmp_path), now=NOW)
     target = PaperLedger(result["path"])
@@ -220,9 +208,7 @@ def test_legacy_prefix_changes_cannot_be_hidden_by_valid_runtime_row(
         active_manifest(target)
 
 
-def test_failed_candidate_does_not_publish_target_or_change_source(
-    source, tmp_path, monkeypatch
-):
+def test_failed_candidate_does_not_publish_target_or_change_source(source, tmp_path, monkeypatch):
     before = source.path.read_bytes()
     switch(monkeypatch)
 
@@ -236,9 +222,7 @@ def test_failed_candidate_does_not_publish_target_or_change_source(
     assert not Path(request(source, tmp_path)["target"]).exists()
 
 
-def test_second_handoff_keeps_the_full_chain_and_closed_history(
-    source, tmp_path, monkeypatch
-):
+def test_second_handoff_keeps_the_full_chain_and_closed_history(source, tmp_path, monkeypatch):
     switch(monkeypatch)
     first = runtime.transition_copy(**request(source, tmp_path), now=NOW)
     book = PaperLedger(first["path"])
@@ -289,10 +273,7 @@ def test_same_intent_concurrent_publication_returns_the_existing_revision(
     result = runtime.transition_copy(**request(source, tmp_path), now=NOW)
     assert result["replayed"]
     with paper_connection(result["path"]) as conn:
-        assert (
-            conn.execute("SELECT COUNT(*) FROM paper_runtime_transitions").fetchone()[0]
-            == 1
-        )
+        assert conn.execute("SELECT COUNT(*) FROM paper_runtime_transitions").fetchone()[0] == 1
 
 
 def test_runtime_python_drift_and_new_day_before_effective_are_blocked(
@@ -312,9 +293,7 @@ def test_runtime_python_drift_and_new_day_before_effective_are_blocked(
         exp.verify_runtime(manifest)
 
 
-def test_cli_handoff_creates_no_cash_events_and_original_source_stays_frozen(
-    tmp_path, monkeypatch
-):
+def test_cli_handoff_creates_no_cash_events_and_original_source_stays_frozen(tmp_path, monkeypatch):
     import subprocess
     from datetime import timedelta
 
@@ -327,7 +306,7 @@ def test_cli_handoff_creates_no_cash_events_and_original_source_stays_frozen(
         exp.start_experiment(
             tmp_path / "source.db",
             config,
-            execution.load_policy(ROOT / "params/execution_v1.json"),
+            load_policy(ROOT / "params/execution_v1.json"),
             now=now,
         )
     body = {
@@ -369,7 +348,7 @@ def test_handoff_rejects_other_accounts_outside_the_inherited_experiment(
         "other",
         "100.00",
         "2026-11-01",
-        execution.load_policy(ROOT / "params/execution_v1.json"),
+        load_policy(ROOT / "params/execution_v1.json"),
     )
     switch(monkeypatch)
     with pytest.raises(LedgerConflict, match="isolated"):
@@ -379,9 +358,7 @@ def test_handoff_rejects_other_accounts_outside_the_inherited_experiment(
 
 def test_future_runtime_is_scheduled_and_cannot_claim_current_readiness(source):
     manifest = active_manifest(source)
-    status = runtime.runtime_status(
-        manifest, now=datetime(2026, 10, 31, 18, tzinfo=ZONE)
-    )
+    status = runtime.runtime_status(manifest, now=datetime(2026, 10, 31, 18, tzinfo=ZONE))
     assert status["activation_state"] == "scheduled"
     assert not status["ready"]
     assert not status["can_settle_current_day"]

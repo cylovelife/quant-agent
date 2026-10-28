@@ -8,8 +8,7 @@ from pathlib import Path
 
 import pandas as pd
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-import evaluate  # noqa: E402
+import quant_agent.application.investing.evaluation as evaluate  # noqa: E402
 
 
 def test_weight_window_preserves_every_row_of_the_boundary_day():
@@ -25,9 +24,7 @@ def test_weight_window_preserves_every_row_of_the_boundary_day():
     uneven = pd.concat(
         [
             data,
-            pd.DataFrame(
-                [{"date": "2026-01-11", "code": str(i), "ret": i} for i in range(30)]
-            ),
+            pd.DataFrame([{"date": "2026-01-11", "code": str(i), "ret": i} for i in range(30)]),
         ],
         ignore_index=True,
     )
@@ -38,7 +35,7 @@ def test_weight_window_preserves_every_row_of_the_boundary_day():
 
 
 def fixture_snapshot(tmp_path):
-    from data_snapshot import publish_snapshot
+    from quant_agent.infrastructure.persistence.snapshots import publish_snapshot
 
     dates = pd.bdate_range("2025-01-01", periods=15)
     frame = pd.DataFrame(
@@ -75,7 +72,8 @@ def protocol():
 
 def test_frozen_identity_candidates_and_single_use_test(tmp_path):
     import pytest
-    from research_experiments import ExperimentRegistry
+
+    from quant_agent.application.research.experiments import ExperimentRegistry
 
     snapshot = fixture_snapshot(tmp_path)
     registry = ExperimentRegistry.create(tmp_path / "experiments.db")
@@ -83,15 +81,9 @@ def test_frozen_identity_candidates_and_single_use_test(tmp_path):
     eid = first["experiment_id"]
     again = registry.register(snapshot, protocol())
     assert again["experiment_id"] == eid and again["replayed"]
-    c1 = registry.add_candidate(eid, {"weights": {"boll": 0.4, "rsi": 0.6}})[
-        "candidate_id"
-    ]
-    assert registry.add_candidate(eid, {"weights": {"boll": 0.4, "rsi": 0.6}})[
-        "replayed"
-    ]
-    c2 = registry.add_candidate(eid, {"weights": {"boll": 0.6, "rsi": 0.4}})[
-        "candidate_id"
-    ]
+    c1 = registry.add_candidate(eid, {"weights": {"boll": 0.4, "rsi": 0.6}})["candidate_id"]
+    assert registry.add_candidate(eid, {"weights": {"boll": 0.4, "rsi": 0.6}})["replayed"]
+    c2 = registry.add_candidate(eid, {"weights": {"boll": 0.6, "rsi": 0.4}})["candidate_id"]
     with pytest.raises(ValueError, match="budget"):
         registry.add_candidate(eid, {"weights": {"boll": 0.7, "rsi": 0.3}})
     with pytest.raises(ValueError, match="previously locked"):
@@ -122,7 +114,8 @@ def test_frozen_identity_candidates_and_single_use_test(tmp_path):
 
 def test_failed_or_interrupted_attempts_are_not_erased(tmp_path):
     import pytest
-    from research_experiments import ExperimentRegistry
+
+    from quant_agent.application.research.experiments import ExperimentRegistry
 
     registry = ExperimentRegistry.create(tmp_path / "registry.db")
     eid = registry.register(fixture_snapshot(tmp_path), protocol())["experiment_id"]
@@ -141,7 +134,8 @@ def test_failed_or_interrupted_attempts_are_not_erased(tmp_path):
 
 def test_damaged_data_and_runtime_drift_fail_closed(tmp_path, monkeypatch):
     import pytest
-    import research_experiments as module
+
+    import quant_agent.application.research.experiments as module
 
     registry = module.ExperimentRegistry.create(tmp_path / "registry.db")
     snapshot = fixture_snapshot(tmp_path)
@@ -159,7 +153,8 @@ def test_damaged_data_and_runtime_drift_fail_closed(tmp_path, monkeypatch):
 
 def test_registry_refuses_existing_files_and_wrong_universe(tmp_path):
     import pytest
-    from research_experiments import ExperimentRegistry
+
+    from quant_agent.application.research.experiments import ExperimentRegistry
 
     target = tmp_path / "existing.db"
     target.write_bytes(b"user file")
@@ -248,16 +243,15 @@ def test_explicit_cli_registers_and_preserves_failures(tmp_path):
 
 def test_raw_etf_proxy_and_cached_source_remain_distinct(tmp_path, monkeypatch):
     import json
-    import fundamentals
+
+    import quant_agent.infrastructure.market_data.fundamentals as fundamentals
 
     class Response:
         def json(self):
             return {
                 "data": {
                     "sh510300": {
-                        "day": [
-                            ["2026-10-26", "4.155", "4.179", "4.187", "4.130", "1000"]
-                        ]
+                        "day": [["2026-10-26", "4.155", "4.179", "4.187", "4.130", "1000"]]
                     }
                 }
             }
@@ -291,7 +285,8 @@ def test_raw_etf_proxy_and_cached_source_remain_distinct(tmp_path, monkeypatch):
 
 def test_managed_attempt_runs_once_and_records_exceptions(tmp_path):
     import pytest
-    from research_experiments import ExperimentRegistry
+
+    from quant_agent.application.research.experiments import ExperimentRegistry
 
     registry = ExperimentRegistry.create(tmp_path / "managed.db")
     eid = registry.register(fixture_snapshot(tmp_path), protocol())["experiment_id"]
@@ -320,7 +315,8 @@ def test_managed_attempt_runs_once_and_records_exceptions(tmp_path):
 
 def test_managed_runner_does_not_replay_a_manual_result(tmp_path):
     import pytest
-    from research_experiments import ExperimentRegistry
+
+    from quant_agent.application.research.experiments import ExperimentRegistry
 
     registry = ExperimentRegistry.create(tmp_path / "managed.db")
     eid = registry.register(fixture_snapshot(tmp_path), protocol())["experiment_id"]
@@ -331,11 +327,10 @@ def test_managed_runner_does_not_replay_a_manual_result(tmp_path):
         registry.run_attempt(eid, cid, "manual", "validation", lambda: {})
 
 
-def test_managed_attempt_rechecks_frozen_runtime_before_recording_success(
-    tmp_path, monkeypatch
-):
+def test_managed_attempt_rechecks_frozen_runtime_before_recording_success(tmp_path, monkeypatch):
     import pytest
-    import research_experiments as module
+
+    import quant_agent.application.research.experiments as module
 
     registry = module.ExperimentRegistry.create(tmp_path / "managed.db")
     eid = registry.register(fixture_snapshot(tmp_path), protocol())["experiment_id"]

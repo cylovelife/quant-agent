@@ -104,11 +104,11 @@ SDK 支持批量查询、字段投影、周期聚合和复权。README 的性能
 
 ## 本轮实施计划
 
-1. `src/local_data.py`：只读 SQLite 批量读取，市场/复权隔离，字段白名单，日期过滤，
+1. `src/quant_agent/infrastructure/persistence/local.py`：只读 SQLite 批量读取，市场/复权隔离，字段白名单，日期过滤，
    日/周/月 OHLCV 聚合。所有周期使用真实最后一根日线日期；先截断再聚合，避免前视。
-2. `src/data_snapshot.py`：确定性 JSON 数据集、SHA-256、原子发布，重复数据复用，
+2. `src/quant_agent/infrastructure/persistence/snapshots.py`：确定性 JSON 数据集、SHA-256、原子发布，重复数据复用，
    本地目录离线同步与完整性校验。快照不覆盖已有快照，也不直接还原/覆盖行情库。
-3. `src/daily_research.py`：显式同步固定观察池，生成冻结快照，复用现有
+3. `src/quant_agent/application/research/daily.py`：显式同步固定观察池，生成冻结快照，复用现有
    `rolling_factor_ic` 做描述性历史体检；按输入/参数/代码指纹幂等记录 SQLite 台账。
    历史修订与新增交易日分开，重复运行不增加证据天数。所有结论仅为观察，
    不修改 `params/`，不自动准入因子，不宣称通过样本外/FDR/影子验证。
@@ -149,7 +149,7 @@ scikit-learn 1.7.2、scipy 1.17.1；未修改系统 Python 环境。
 | `.venv/bin/python tests/offline_ml.py` | 通过，日志 `logs/offline_ml.log` |
 | `.venv/bin/python tests/verify_phase_cache.py --refresh` | 通过；3 阶段 fresh/prime/hit 深度等价，日志 `logs/verify_phase_cache.log` |
 | Ruff check / format --check | 4 个新模块 + 新测试均通过；存量文件只检查本轮 diff，不批量格式化 |
-| `py_compile run.py src/fetcher.py`、`git diff --check` | 通过 |
+| `py_compile run.py src/quant_agent/infrastructure/market_data/fetcher.py`、`git diff --check` | 通过 |
 | `run.py --daily` 冷启动真实采集 | 12 只 × 301 根写入本地库；首次旧端点 501 的失败也保留在台账。修复兜底后 46.8s 完成，截止日安全选择 3,600 根，12 个序列均无 missing/invalid/stale/lagging |
 | `run.py --daily --offline` 连续复跑 | 返回 0；同一 run_id、`reused=true`、`evidence_days=1`，没有把重复运行增加成新证据 |
 | `--verify-snapshot` + `--sync-snapshot` + 镜像再校验 | 真实 12 个序列/3,600 根通过；临时镜像验收目录已自动清理 |

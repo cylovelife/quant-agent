@@ -2,20 +2,20 @@
 
 本页覆盖本次自有模型、数据处理、实验驱动、提交复现和测试。既有投资系统不属于这次新增改动；运行原始数据、预测CSV、模型产物和凭据继续留在Git忽略的`state/`，不随代码公开。
 
-所有自有代码文件及SHA-256见[代码清单](code_manifest.json)。
+当前包结构下的自有代码及SHA-256见[代码清单](code_manifest.json)。迁移前的路径与哈希另存于[历史清单](source_history/code_manifest_before_packages.json)，对应已发布Notebook及先前提交；不将新路径的哈希伪装成旧记录。
 
 ## 建议阅读顺序
 
 | 顺序 | 文件 | 负责什么 |
 |---|---|---|
-| 1 | [competition_data.py](../../src/competition_data.py) | SHA/重复副本/表结构/日期/OHLC校验，分离训练标签与无标签输入 |
-| 2 | [competition_validation.py](../../src/competition_validation.py) | 用实际label_end清除跨时间边界样本 |
-| 3 | [competition_baseline.py](../../src/competition_baseline.py) | 原18项因果特征、星期/Logistic/浅树、选型锁定及一次保留评估 |
-| 4 | [competition_metrics.py](../../src/competition_metrics.py) | Accuracy、Balanced Accuracy、混淆矩阵和原样例格式输出 |
-| 5 | [competition_submission.py](../../src/competition_submission.py) | 365条服务器协议、缺失输入先验、显式互补编码 |
-| 6 | [competition_reproduce.py](../../src/competition_reproduce.py) | 仅重拟合固定星期模型并复现最终CSV，不重复保留评估、不上传 |
-| 7 | [competition_event_clock.py](../../src/competition_event_clock.py) | OHLC变化时钟与训练内零标签星期分支 |
-| 8 | [competition_timeseries.py](../../src/competition_timeseries.py) | AR(5)/ARX(5)收益特征与固定alpha的Ridge拟合 |
+| 1 | [competition_data.py](../../src/quant_agent/competitions/stock_price/data.py) | SHA/重复副本/表结构/日期/OHLC校验，分离训练标签与无标签输入 |
+| 2 | [competition_validation.py](../../src/quant_agent/competitions/stock_price/validation.py) | 用实际label_end清除跨时间边界样本 |
+| 3 | [competition_baseline.py](../../src/quant_agent/competitions/stock_price/baseline.py) | 原18项因果特征、星期/Logistic/浅树、选型锁定及一次保留评估 |
+| 4 | [competition_metrics.py](../../src/quant_agent/competitions/stock_price/metrics.py) | Accuracy、Balanced Accuracy、混淆矩阵和原样例格式输出 |
+| 5 | [competition_submission.py](../../src/quant_agent/competitions/stock_price/submission.py) | 365条服务器协议、缺失输入先验、显式互补编码 |
+| 6 | [competition_reproduce.py](../../src/quant_agent/competitions/stock_price/reproduce.py) | 仅重拟合固定星期模型并复现最终CSV，不重复保留评估、不上传 |
+| 7 | [competition_event_clock.py](../../src/quant_agent/competitions/stock_price/event_clock.py) | OHLC变化时钟与训练内零标签星期分支 |
+| 8 | [competition_timeseries.py](../../src/quant_agent/competitions/stock_price/timeseries.py) | AR(5)/ARX(5)收益特征与固定alpha的Ridge拟合 |
 
 第二名提交实际使用第1–6项；事件时钟和AR/ARX是未被采用的本地对照。第二名输出包含看到公开分数后的整体`1-y`选择，不能把该排名归因于AR/ARX或独立验证创新。[完整解释](rank2_2026-10-28.md)
 
@@ -54,10 +54,10 @@
 
 ## 从已授权下载的原始文件复现最终提交
 
-先在本机接受赛规并官方下载、保留根目录及`StockTrends/`的三对原文件。代码不分发这些文件。下面只生成新文件，遇已有路径明确失败，不发起线上提交：
+先按仓库README安装依赖和本地包，再在本机接受赛规并官方下载、保留根目录及`StockTrends/`的三对原文件。代码不分发这些文件。下面只生成新文件，遇已有路径明确失败，不发起线上提交：
 
 ```bash
-.venv/bin/python src/competition_reproduce.py \
+.venv/bin/python -m quant_agent.competitions.stock_price.reproduce \
   --raw state/competitions/stock-price-predictor/raw \
   --contract docs/competitions/stock_price_predictor_contract_at_training.json \
   --output state/competitions/stock-price-predictor/review-reproduced.csv \
@@ -75,3 +75,5 @@
 本轮本地验证（2026-10-28）：上述pytest命令为`44 passed in 8.74s`；竞赛模块及测试`ruff check`通过；最终CSV为365条预测、SHA与已提交版本一致，已有输出路径拒绝覆盖。15项自有源码清单哈希、4份历史快照逐字节核对通过。暂存31个文件，检查未含原始xlsx、CSV、账本或实际凭据值。远程推送与Kaggle代码公开状态需分别以平台回读为准。
 
 [本轮交付记录](code_delivery_2026-10-28.md)记录验证、公开状态与交付边界。对应比赛的[公开代码审阅Notebook](https://www.kaggle.com/code/leon0330/stock-price-predictor-code-review-20261028)已提供同一份源码。
+
+包结构与旧模块映射见[架构说明](../architecture/package_layout.md)。当前比赛模块均位于`quant_agent.competitions.stock_price`；历史脚本快照保持原字节和旧导入，须在历史提交上审阅/复现。

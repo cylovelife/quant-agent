@@ -59,7 +59,7 @@
 # 四项均通过
 .venv/bin/python tests/offline_e2e.py --synthetic
 # 构造行情端到端通过，内含 150 项既有回归
-.venv/bin/ruff check src/paper_experiment.py src/paper_daily.py src/paper_ledger.py src/execution_cli.py tests/test_paper_experiment.py
+.venv/bin/ruff check src/quant_agent/application/paper/experiment.py src/quant_agent/application/paper/daily.py src/quant_agent/application/paper/ledger.py src/quant_agent/entrypoints/execution.py tests/test_paper_experiment.py
 # 通过
 ```
 

@@ -3,14 +3,10 @@
 @author cylovelife
 """
 
-import sys
-from pathlib import Path
-
 import pandas as pd
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from temporal_validation import split_three_way  # noqa: E402
+from quant_agent.domain.research.validation import split_three_way  # noqa: E402
 
 
 def test_group_by_whole_dates_and_purge_actual_ends():
@@ -22,14 +18,11 @@ def test_group_by_whole_dates_and_purge_actual_ends():
     p = split_three_way(pd.DataFrame(rows), date_col="date", end_col="end")
     assert p.validation_start == "2026-01-07" and p.test_start == "2026-01-09"
     assert not (
-        set(p.train.date) & set(p.validation.date)
-        or set(p.validation.date) & set(p.test.date)
+        set(p.train.date) & set(p.validation.date) or set(p.validation.date) & set(p.test.date)
     )
     assert all(p.train.end < pd.Timestamp(p.validation_start))
     assert all(p.validation.end < pd.Timestamp(p.test_start))
-    assert not (
-        (p.train.date == pd.Timestamp("2026-01-05")) & (p.train.symbol == "a")
-    ).any()
+    assert not ((p.train.date == pd.Timestamp("2026-01-05")) & (p.train.symbol == "a")).any()
 
 
 def test_missing_or_invalid_end_never_inferred():
@@ -43,9 +36,7 @@ def test_missing_or_invalid_end_never_inferred():
 
 def test_fixed_boundaries_ignore_future_rows_and_unmatured_test_labels():
     days = pd.date_range("2026-01-01", periods=12)
-    df = pd.DataFrame(
-        {"date": days, "end": days + pd.Timedelta(days=1), "x": range(12)}
-    )
+    df = pd.DataFrame({"date": days, "end": days + pd.Timedelta(days=1), "x": range(12)})
     bounds = {
         "validation_start": "2026-01-05",
         "test_start": "2026-01-08",
@@ -63,7 +54,8 @@ def test_fixed_boundaries_ignore_future_rows_and_unmatured_test_labels():
 
 def test_short_selection_keeps_test_out_of_selection_and_groups_dates(monkeypatch):
     import numpy as np
-    import model_select
+
+    import quant_agent.application.research.model_selection as model_select
 
     dates = pd.date_range("2026-01-01", periods=60)
     signals = []
@@ -77,9 +69,7 @@ def test_short_selection_keeps_test_out_of_selection_and_groups_dates(monkeypatc
                     str((d + pd.Timedelta(days=2)).date()),
                 )
             )
-    monkeypatch.setattr(
-        model_select.em, "_collect_signals", lambda *a, **kw: list(signals)
-    )
+    monkeypatch.setattr(model_select.em, "_collect_signals", lambda *a, **kw: list(signals))
     cfg = {
         "temporal_validation": {
             "validation_start": "2026-02-05",
@@ -101,17 +91,15 @@ def test_short_selection_keeps_test_out_of_selection_and_groups_dates(monkeypatc
     again = model_select.select_short(cfg, params, {})
     assert again["recommend"] == first["recommend"]
     assert again["recommend_stats"] == first["recommend_stats"]
-    assert (
-        again["folds"][0]["oos_picked"]["avg"] != first["folds"][0]["oos_picked"]["avg"]
-    )
+    assert again["folds"][0]["oos_picked"]["avg"] != first["folds"][0]["oos_picked"]["avg"]
     assert model_select.select_short({}, params, {}) is None
-    import report
+    import quant_agent.infrastructure.reporting.investment as report
 
     assert "验证集候选" in report.model_selection_md(first)
 
 
 def test_exit_threshold_selection_ignores_test_targets(monkeypatch):
-    import exit_model
+    import quant_agent.domain.research.exit_model as exit_model
 
     rows = []
     for i, d in enumerate(pd.date_range("2026-01-01", periods=60)):
@@ -140,9 +128,7 @@ def test_exit_threshold_selection_ignores_test_targets(monkeypatch):
     assert first is not None
     changed = frame.copy()
     changed.loc[changed.entry_date >= bounds["test_start"], "ret_expire"] = -0.7
-    again = exit_model.evaluate_exit_policy(
-        changed, 2, min_bucket_n=2, boundaries=bounds
-    )
+    again = exit_model.evaluate_exit_policy(changed, 2, min_bucket_n=2, boundaries=bounds)
     assert (again["tau"], again["t_min"], again["score_edges"]) == (
         first["tau"],
         first["t_min"],
@@ -151,9 +137,7 @@ def test_exit_threshold_selection_ignores_test_targets(monkeypatch):
     assert again["validation_selection"] == first["validation_selection"]
     assert again["oos"]["baseline"]["avg_ret"] != first["oos"]["baseline"]["avg_ret"]
     assert (
-        exit_model.evaluate_exit_policy(
-            frame.drop(columns="label_end_date"), 2, boundaries=bounds
-        )
+        exit_model.evaluate_exit_policy(frame.drop(columns="label_end_date"), 2, boundaries=bounds)
         is None
     )
     monkeypatch.setattr(exit_model, "build_exit_panel", lambda *a, **k: frame)
@@ -164,16 +148,14 @@ def test_exit_threshold_selection_ignores_test_targets(monkeypatch):
     altered = exit_model.fit_exit_model(
         {}, {"backtest": {"hold_days": 2}}, min_bucket_n=2, boundaries=bounds
     )
-    assert (
-        model["states"] == altered["states"]
-        and model["score_edges"] == altered["score_edges"]
-    )
+    assert model["states"] == altered["states"] and model["score_edges"] == altered["score_edges"]
     assert (model["tau"], model["t_min"]) == (altered["tau"], altered["t_min"])
 
 
 def test_ml_actual_end_and_test_targets_never_change_selection(monkeypatch):
     import numpy as np
-    import ml_eval
+
+    import quant_agent.domain.research.ml_eval as ml_eval
 
     rng = np.random.default_rng(123)
     rows = []
@@ -223,24 +205,20 @@ def test_ml_actual_end_and_test_targets_never_change_selection(monkeypatch):
     assert first["best"] == again["best"] == "ridge"
     assert first["selection_candidates"] == again["selection_candidates"]
     assert np.array_equal(first_predictions, predictions[-1])
-    assert (
-        first["candidates"]["ridge"]["ic_mean"]
-        != again["candidates"]["ridge"]["ic_mean"]
-    )
+    assert first["candidates"]["ridge"]["ic_mean"] != again["candidates"]["ridge"]["ic_mean"]
     assert not first["gate"]["passed"]
     cutoff = sorted(panel.date.unique())[-3]
     partial = panel[panel.date <= cutoff].copy()
     ml_eval.evaluate_against_rule(partial, "ret_20", **kw)
     assert np.array_equal(first_predictions[: len(predictions[-1])], predictions[-1])
-    missing = ml_eval.evaluate_against_rule(
-        panel.drop(columns="label_end_ret_20"), "ret_20", **kw
-    )
+    missing = ml_eval.evaluate_against_rule(panel.drop(columns="label_end_ret_20"), "ret_20", **kw)
     assert not missing["candidates"] and "标签结束" in missing["verdict"]
 
 
 def test_walk_forward_uses_actual_end_not_approximate_horizon():
     import numpy as np
-    import ml_eval
+
+    import quant_agent.domain.research.ml_eval as ml_eval
 
     rows = []
     for i, day in enumerate(pd.date_range("2026-01-01", periods=12)):
@@ -273,15 +251,14 @@ def test_walk_forward_uses_actual_end_not_approximate_horizon():
     mask = panel.date < "2026-01-10"
     assert a[mask].notna().any()
     assert np.allclose(a[mask], b[mask], equal_nan=True)
-    missing = ml_eval.walk_forward_predict(
-        panel.drop(columns="label_end_ret_1"), **kwargs
-    )
+    missing = ml_eval.walk_forward_predict(panel.drop(columns="label_end_ret_1"), **kwargs)
     assert missing.isna().all()
 
 
 def test_long_selection_does_not_use_test_returns():
     import numpy as np
-    import model_select
+
+    import quant_agent.application.research.model_selection as model_select
 
     rng = np.random.default_rng(4)
     rows = []
@@ -295,8 +272,7 @@ def test_long_selection_does_not_use_test_returns():
                     "code": str(i),
                     **features,
                     **{
-                        f"ret_{n}": features["v_quality"] / 100
-                        + float(rng.normal(0, 0.1))
+                        f"ret_{n}": features["v_quality"] / 100 + float(rng.normal(0, 0.1))
                         for n in (20, 60, 120)
                     },
                     **{
@@ -324,18 +300,14 @@ def test_long_selection_does_not_use_test_returns():
     assert first["best"] == again["best"]
     assert first["candidates"] == again["candidates"]
     assert first["test_metrics"] != again["test_metrics"]
-    assert (
-        model_select.select_long(panel.drop(columns="label_end_ret_120"), cfg) is None
-    )
+    assert model_select.select_long(panel.drop(columns="label_end_ret_120"), cfg) is None
 
 
 def test_historical_replay_exposes_actual_label_ends(monkeypatch):
-    import value_track
+    import quant_agent.application.research.value_tracking as value_track
 
     dates = pd.bdate_range("2024-01-01", periods=140)
-    bars = pd.DataFrame(
-        {"date": dates, "close": [10.0 + i / 10 for i in range(len(dates))]}
-    )
+    bars = pd.DataFrame({"date": dates, "close": [10.0 + i / 10 for i in range(len(dates))]})
     monkeypatch.setattr(
         value_track,
         "replay_score",
@@ -383,7 +355,8 @@ def test_historical_replay_exposes_actual_label_ends(monkeypatch):
 def test_missing_unfinished_or_future_boundaries_fail_closed():
     from datetime import datetime, timedelta
     from zoneinfo import ZoneInfo
-    from temporal_validation import configured_boundaries
+
+    from quant_agent.domain.research.validation import configured_boundaries
 
     today = datetime.now(ZoneInfo("Asia/Shanghai")).date()
     bounds = {
@@ -396,8 +369,8 @@ def test_missing_unfinished_or_future_boundaries_fail_closed():
 
 
 def test_short_and_exit_cut_raw_bars_before_feature_generation(monkeypatch):
-    import model_select
-    import exit_model
+    import quant_agent.application.research.model_selection as model_select
+    import quant_agent.domain.research.exit_model as exit_model
 
     seen = []
     raw = {
@@ -422,10 +395,5 @@ def test_short_and_exit_cut_raw_bars_before_feature_generation(monkeypatch):
     monkeypatch.setattr(model_select.em, "_collect_signals", collect)
     monkeypatch.setattr(exit_model, "build_exit_panel", build)
     assert model_select.select_short({"temporal_validation": bounds}, {}, raw) is None
-    assert (
-        exit_model.fit_exit_model(
-            raw, {"backtest": {"hold_days": 2}}, boundaries=bounds
-        )
-        is None
-    )
+    assert exit_model.fit_exit_model(raw, {"backtest": {"hold_days": 2}}, boundaries=bounds) is None
     assert seen == [["2026-01-01", "2026-01-09"], ["2026-01-01", "2026-01-09"]]

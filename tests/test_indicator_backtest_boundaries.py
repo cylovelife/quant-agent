@@ -3,7 +3,6 @@
 @author cylovelife
 """
 
-import sys
 from pathlib import Path
 
 import numpy as np
@@ -11,12 +10,11 @@ import pandas as pd
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
 
-import phase_cache as pc  # noqa: E402
-from backtest import backtest_symbol  # noqa: E402
-from indicators import add_indicators, rsi  # noqa: E402
-from strategy import score_row  # noqa: E402
+import quant_agent.infrastructure.persistence.phase_cache as pc  # noqa: E402
+from quant_agent.application.research.backtest import backtest_symbol  # noqa: E402
+from quant_agent.domain.market.indicators import add_indicators, rsi  # noqa: E402
+from quant_agent.domain.strategies.short_term import score_row  # noqa: E402
 
 
 @pytest.mark.parametrize(
@@ -97,9 +95,7 @@ def test_rsi_and_scores_do_not_change_when_future_is_added():
         row["macd_hist_prev"] = prefix.macd_hist.iloc[-2]
         full_row = full.iloc[79].to_dict()
         full_row["macd_hist_prev"] = full.macd_hist.iloc[78]
-        assert score_row(row, params["weights"]) == score_row(
-            full_row, params["weights"]
-        )
+        assert score_row(row, params["weights"]) == score_row(full_row, params["weights"])
 
 
 @pytest.mark.parametrize(

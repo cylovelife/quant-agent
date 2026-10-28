@@ -5,17 +5,13 @@
 
 import copy
 import json
-import sys
-from pathlib import Path
 
 import pandas as pd
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-import fundamentals as fd  # noqa: E402
-import portfolio  # noqa: E402
-import value_track as vt  # noqa: E402
+import quant_agent.application.investing.portfolio as portfolio  # noqa: E402
+import quant_agent.application.research.value_tracking as vt  # noqa: E402
+import quant_agent.infrastructure.market_data.fundamentals as fd  # noqa: E402
 
 
 def test_quarter_only_financials_use_latest_observed_metrics():
@@ -51,9 +47,7 @@ def test_pb_does_not_use_a_report_until_after_its_actual_disclosure():
 
 
 def test_pb_excludes_missing_and_proxy_disclosure_dates():
-    prices = pd.DataFrame(
-        {"date": pd.bdate_range("2026-01-01", periods=100), "close": 100.0}
-    )
+    prices = pd.DataFrame({"date": pd.bdate_range("2026-01-01", periods=100), "close": 100.0})
     rows = [
         {"REPORT_DATE": "2025-03-31", "BPS": 10},
         {
@@ -68,9 +62,7 @@ def test_pb_excludes_missing_and_proxy_disclosure_dates():
 
 
 def test_pb_uses_latest_report_period_when_an_older_report_is_redisclosed():
-    prices = pd.DataFrame(
-        {"date": pd.bdate_range("2026-01-01", periods=100), "close": 100.0}
-    )
+    prices = pd.DataFrame({"date": pd.bdate_range("2026-01-01", periods=100), "close": 100.0})
     rows = [
         {"REPORT_DATE": "2024-12-31", "NOTICE_DATE": "2025-04-30", "BPS": 10},
         {"REPORT_DATE": "2025-06-30", "NOTICE_DATE": "2025-08-30", "BPS": 20},
@@ -97,9 +89,7 @@ def tracking_files(tmp_path, monkeypatch):
 
 
 def test_long_tracking_is_idempotent_for_leading_zero_codes(tracking_files):
-    bars = pd.DataFrame(
-        {"date": pd.to_datetime(["2026-10-19", "2026-10-20"]), "close": [100, 110]}
-    )
+    bars = pd.DataFrame({"date": pd.to_datetime(["2026-10-19", "2026-10-20"]), "close": [100, 110]})
     cfg = {"longterm": {"track_milestones": [1]}}
     assert vt.settle_tracking(lambda *_: bars, cfg, "2026-10-27")["new_rows"] == 1
     again = vt.settle_tracking(lambda *_: bars, cfg, "2026-10-27")
@@ -126,9 +116,7 @@ def test_long_tracking_benchmark_uses_the_same_observed_dates(tracking_files):
 
 
 def test_long_tracking_does_not_settle_a_future_milestone(tracking_files):
-    bars = pd.DataFrame(
-        {"date": pd.to_datetime(["2026-10-19", "2026-10-21"]), "close": [100, 110]}
-    )
+    bars = pd.DataFrame({"date": pd.to_datetime(["2026-10-19", "2026-10-21"]), "close": [100, 110]})
     result = vt.settle_tracking(
         lambda *_: bars, {"longterm": {"track_milestones": [1]}}, "2026-10-20"
     )
@@ -147,16 +135,10 @@ def test_long_tracking_does_not_settle_a_future_milestone(tracking_files):
         "bad_return",
     ],
 )
-def test_invalid_long_tracking_history_is_not_ignored_or_appended(
-    tracking_files, damage
-):
+def test_invalid_long_tracking_history_is_not_ignored_or_appended(tracking_files, damage):
     path = tracking_files / "outcomes.csv"
-    bars = pd.DataFrame(
-        {"date": pd.to_datetime(["2026-10-19", "2026-10-20"]), "close": [100, 110]}
-    )
-    vt.settle_tracking(
-        lambda *_: bars, {"longterm": {"track_milestones": [1]}}, "2026-10-27"
-    )
+    bars = pd.DataFrame({"date": pd.to_datetime(["2026-10-19", "2026-10-20"]), "close": [100, 110]})
+    vt.settle_tracking(lambda *_: bars, {"longterm": {"track_milestones": [1]}}, "2026-10-27")
     header, row = path.read_text(encoding="utf-8").splitlines()
     fields, values = header.split(","), row.split(",")
     if damage == "utf8":
@@ -180,9 +162,7 @@ def test_invalid_long_tracking_history_is_not_ignored_or_appended(
         content = (",".join(fields) + "\n" + ",".join(values) + "\n").encode()
     path.write_bytes(content)
     with pytest.raises((ValueError, UnicodeError)):
-        vt.settle_tracking(
-            lambda *_: bars, {"longterm": {"track_milestones": [1]}}, "2026-10-27"
-        )
+        vt.settle_tracking(lambda *_: bars, {"longterm": {"track_milestones": [1]}}, "2026-10-27")
     assert path.read_bytes() == content
 
 
@@ -190,19 +170,13 @@ def test_duplicate_long_tracking_history_cannot_be_counted_as_new_evidence(
     tracking_files,
 ):
     path = tracking_files / "outcomes.csv"
-    bars = pd.DataFrame(
-        {"date": pd.to_datetime(["2026-10-19", "2026-10-20"]), "close": [100, 110]}
-    )
-    vt.settle_tracking(
-        lambda *_: bars, {"longterm": {"track_milestones": [1]}}, "2026-10-27"
-    )
+    bars = pd.DataFrame({"date": pd.to_datetime(["2026-10-19", "2026-10-20"]), "close": [100, 110]})
+    vt.settle_tracking(lambda *_: bars, {"longterm": {"track_milestones": [1]}}, "2026-10-27")
     lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
     content = "".join(lines + lines[1:])
     path.write_text(content, encoding="utf-8")
     with pytest.raises(ValueError, match="duplicate"):
-        vt.settle_tracking(
-            lambda *_: bars, {"longterm": {"track_milestones": [1]}}, "2026-10-27"
-        )
+        vt.settle_tracking(lambda *_: bars, {"longterm": {"track_milestones": [1]}}, "2026-10-27")
     assert path.read_text(encoding="utf-8") == content
 
 
@@ -230,9 +204,7 @@ def test_failed_book_serialization_preserves_the_prior_file(tmp_path):
     assert path.read_text(encoding="utf-8") == original
 
 
-def test_replaying_after_a_crash_does_not_duplicate_completed_trades(
-    tmp_path, monkeypatch
-):
+def test_replaying_after_a_crash_does_not_duplicate_completed_trades(tmp_path, monkeypatch):
     monkeypatch.setattr(portfolio, "TRADES_PATH", str(tmp_path / "trades.csv"))
     pending = {"positions": []}
     portfolio.add_positions(
@@ -264,7 +236,7 @@ def test_replaying_after_a_crash_does_not_duplicate_completed_trades(
 
 
 def _completed_trade():
-    from trade_semantics import LABEL_VERSION
+    from quant_agent.domain.trading.labels import LABEL_VERSION
 
     return {
         "market": "cn",
@@ -296,9 +268,7 @@ def test_invalid_existing_trades_cannot_be_overwritten(tmp_path, content):
     assert target.read_text(encoding="utf-8") == content
 
 
-def test_failed_atomic_trade_publication_preserves_existing_history(
-    tmp_path, monkeypatch
-):
+def test_failed_atomic_trade_publication_preserves_existing_history(tmp_path, monkeypatch):
     path = str(tmp_path / "trades.csv")
     trade = _completed_trade()
     portfolio._append_trades([trade], path)

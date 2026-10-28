@@ -55,7 +55,7 @@
 
 ## 凭据和边界
 
-适配器 `src/datasources/etf_qfq_source.py` 复用 `SourceGuard` 的预算、限速和健康记录，
+适配器 `src/quant_agent/infrastructure/market_data/datasources/etf_qfq_source.py` 复用 `SourceGuard` 的预算、限速和健康记录，
 内部每个请求只尝试一次并给定超时；失败不使用缺因子的原始价格继续运行。
 某只 ETF 的因子不受支持不会把其他 ETF 一并判成源级字段变化。
 

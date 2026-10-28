@@ -3,16 +3,14 @@
 @author cylovelife
 """
 
-from pathlib import Path
-import sys
-
 import numpy as np
 import pandas as pd
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from competition_event_clock import event_features, gated_predict  # noqa: E402
+from quant_agent.competitions.stock_price.event_clock import (  # noqa: E402
+    event_features,
+    gated_predict,
+)
 
 
 def prices():

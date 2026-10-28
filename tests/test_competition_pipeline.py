@@ -5,25 +5,24 @@
 
 import hashlib
 import json
-from pathlib import Path
-import sys
 
 import numpy as np
 import pandas as pd
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from competition_data import load_dataset  # noqa: E402
-from competition_validation import purged_window  # noqa: E402
-from competition_metrics import classification_metrics, write_submission  # noqa: E402
-from competition_baseline import (  # noqa: E402
+from quant_agent.competitions.stock_price.baseline import (
     build_features,
     choose_model,
     development_scores,
     fit_predict,
     run_study,
 )
+from quant_agent.competitions.stock_price.data import load_dataset  # noqa: E402
+from quant_agent.competitions.stock_price.metrics import (  # noqa: E402
+    classification_metrics,
+    write_submission,
+)
+from quant_agent.competitions.stock_price.validation import purged_window  # noqa: E402
 
 
 @pytest.fixture
@@ -143,9 +142,7 @@ def test_features_do_not_change_when_future_prices_or_targets_change(source):
     pd.testing.assert_frame_equal(base.iloc[:150], other.iloc[:150])
     assert "Target" not in base
     assert base.drop(columns="Date").shape[1] == 18
-    pd.testing.assert_frame_equal(
-        base.iloc[:150], build_features(data.prices.iloc[:150])
-    )
+    pd.testing.assert_frame_equal(base.iloc[:150], build_features(data.prices.iloc[:150]))
 
 
 def test_purge_uses_actual_label_end_and_disallows_bad_dates():

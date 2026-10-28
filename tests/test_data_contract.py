@@ -5,7 +5,6 @@
 
 import json
 import sqlite3
-import sys
 from pathlib import Path
 
 import numpy as np
@@ -13,14 +12,17 @@ import pandas as pd
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
 
-import evaluate as ev  # noqa: E402
-import portfolio  # noqa: E402
-import value_track as vt  # noqa: E402
-from daily_research import research_daily  # noqa: E402
-from data_snapshot import publish_snapshot, read_snapshot, sync_snapshot  # noqa: E402
-from local_data import LocalData  # noqa: E402
+import quant_agent.application.investing.evaluation as ev  # noqa: E402
+import quant_agent.application.investing.portfolio as portfolio  # noqa: E402
+import quant_agent.application.research.value_tracking as vt  # noqa: E402
+from quant_agent.application.research.daily import research_daily  # noqa: E402
+from quant_agent.infrastructure.persistence.local import LocalData  # noqa: E402
+from quant_agent.infrastructure.persistence.snapshots import (  # noqa: E402
+    publish_snapshot,
+    read_snapshot,
+    sync_snapshot,
+)  # noqa: E402
 
 
 @pytest.fixture
@@ -71,9 +73,7 @@ def db(tmp_path, frame):
     return path
 
 
-def test_query_and_snapshot_preserve_acquisition_without_inventing_publication(
-    db, tmp_path
-):
+def test_query_and_snapshot_preserve_acquisition_without_inventing_publication(db, tmp_path):
     bars = LocalData(db).get_data("cn", ["000001"])["000001"]
     provenance = bars.attrs["data_provenance"]
     assert provenance["observations"][-1]["fetched_at"] == "2026-10-26 18:00:00"
@@ -96,9 +96,9 @@ def test_refetch_is_provenance_update_not_price_revision_or_new_sample(db, tmp_p
     assert again["change"] == "provenance_update"
     assert again["evidence_days"] == first["evidence_days"]
     assert (
-        read_snapshot(first["snapshot_path"])[("cn", "000001", "qfq")].attrs[
-            "data_provenance"
-        ]["observations"][-1]["fetched_at"]
+        read_snapshot(first["snapshot_path"])[("cn", "000001", "qfq")].attrs["data_provenance"][
+            "observations"
+        ][-1]["fetched_at"]
         == "2026-10-26 18:00:00"
     )
 
@@ -121,10 +121,7 @@ def test_revision_changes_price_version_and_keeps_prior_snapshot(db, tmp_path):
     assert contract["universe"]["cn"] == ["000001", "delisted_or_unknown"]
     assert contract["historical_membership_complete"] is False
     assert contract["listing_status_coverage"] == "unknown"
-    assert (
-        read_snapshot(first["snapshot_path"])[("cn", "000001", "qfq")].close.iloc[-2]
-        == 10.0
-    )
+    assert read_snapshot(first["snapshot_path"])[("cn", "000001", "qfq")].close.iloc[-2] == 10.0
 
 
 @pytest.mark.parametrize(
@@ -141,7 +138,7 @@ def test_revision_changes_price_version_and_keeps_prior_snapshot(db, tmp_path):
     ],
 )
 def test_bad_series_is_blocked_without_guessing_suspension(frame, defect):
-    from data_quality import build_data_contract
+    from quant_agent.domain.market.quality import build_data_contract
 
     broken = frame.copy()
     if defect == "duplicate":
@@ -172,7 +169,7 @@ def test_bad_series_is_blocked_without_guessing_suspension(frame, defect):
 
 
 def test_reference_gap_blocks_new_signals_but_does_not_fabricate_holiday(frame):
-    from data_quality import build_data_contract
+    from quant_agent.domain.market.quality import build_data_contract
 
     contract = build_data_contract(
         {("cn", "000001", "qfq"): frame, ("etf", "510300", "qfq"): frame.iloc[:-1]},
@@ -186,7 +183,7 @@ def test_reference_gap_blocks_new_signals_but_does_not_fabricate_holiday(frame):
 
 
 def test_quality_gate_prevents_archiving_bad_new_signal(frame, tmp_path, monkeypatch):
-    from data_quality import build_data_contract
+    from quant_agent.domain.market.quality import build_data_contract
 
     monkeypatch.setattr(ev, "STATE", str(tmp_path))
     bad = frame.copy()
@@ -213,14 +210,10 @@ def test_bad_ohlc_preserves_existing_pending_position(frame, tmp_path, monkeypat
     params = {"backtest": {"hold_days": 1}}
     book = {"positions": []}
     signal_day = str(frame.date.iloc[-2])[:10]
-    portfolio.add_positions(
-        book, {"cn": [{"code": "000001", "score": 90}]}, params, signal_day
-    )
+    portfolio.add_positions(book, {"cn": [{"code": "000001", "score": 90}]}, params, signal_day)
     bad = frame.copy()
     bad.loc[99, "high"] = 1.0
-    closed = portfolio.settle_book(
-        book, {}, {}, params, "2026-10-26", kline_fn=lambda *a: bad
-    )
+    closed = portfolio.settle_book(book, {}, {}, params, "2026-10-26", kline_fn=lambda *a: bad)
     assert not closed
     assert book["positions"][0]["status"] == "pending"
     assert book["positions"][0]["verification_status"] == "unavailable"
@@ -250,24 +243,20 @@ def test_disclosure_becomes_available_after_its_date():
     assert vt._asof_row([row], "2026-10-26")[0] == row
 
 
-@pytest.mark.parametrize(
-    "request_adjust,returned_key", [("qfq", "day"), ("raw", "qfqday")]
-)
+@pytest.mark.parametrize("request_adjust,returned_key", [("qfq", "day"), ("raw", "qfqday")])
 def test_adapter_does_not_relabel_other_adjustment(
     request_adjust, returned_key, tmp_path, monkeypatch
 ):
-    import fetcher
-    import fundamentals
-    import store
+    import quant_agent.infrastructure.market_data.fetcher as fetcher
+    import quant_agent.infrastructure.market_data.fundamentals as fundamentals
+    import quant_agent.infrastructure.persistence.store as store
 
     class Response:
         def json(self):
             return {
                 "data": {
                     "sh600519": {
-                        returned_key: [
-                            ["2026-10-23", "10", "10", "11", "9", "100", "1000"]
-                        ]
+                        returned_key: [["2026-10-23", "10", "10", "11", "9", "100", "1000"]]
                     }
                 }
             }
@@ -285,7 +274,7 @@ def test_adapter_does_not_relabel_other_adjustment(
 
 
 def test_legacy_snapshot_can_still_be_verified_and_mirrored(frame, tmp_path):
-    from data_snapshot import canonical_json, digest
+    from quant_agent.domain.market.serialization import canonical_json, digest
 
     rows = frame.copy()
     rows["date"] = rows.date.dt.strftime("%Y-%m-%d")
@@ -319,7 +308,7 @@ def test_legacy_snapshot_can_still_be_verified_and_mirrored(frame, tmp_path):
 
 
 def test_frozen_contract_keeps_universe_and_invalid_series_decision(frame, tmp_path):
-    from data_quality import freeze_data_contract
+    from quant_agent.application.data_contracts import freeze_data_contract
 
     frame.attrs.update(source="fixture", fetched_at="2026-10-26T18:00:00+08:00")
     broken = pd.concat([frame, frame.tail(1)], ignore_index=True)
@@ -339,7 +328,7 @@ def test_frozen_contract_keeps_universe_and_invalid_series_decision(frame, tmp_p
 
 
 def test_held_symbol_remains_usable_after_leaving_candidate_universe(frame):
-    from data_quality import build_data_contract
+    from quant_agent.domain.market.quality import build_data_contract
 
     frame.attrs.update(source="fixture", fetched_at="2026-10-26T18:00:00+08:00")
     context = build_data_contract({("cn", "000001", "qfq"): frame}, {}, "2026-10-26")
@@ -360,7 +349,7 @@ def test_held_symbol_remains_usable_after_leaving_candidate_universe(frame):
     ],
 )
 def test_incomplete_or_mismatched_provenance_cannot_admit(frame, metadata):
-    from data_quality import build_data_contract
+    from quant_agent.domain.market.quality import build_data_contract
 
     frame = frame.drop(columns="src")
     frame.attrs.update(metadata)
@@ -402,14 +391,14 @@ def test_quality_context_blocks_settlement_without_erasing_existing_fill(
         data_context={"series": {}},
     )
     assert not closed
-    assert {
-        k: v for k, v in book["positions"][0].items() if k != "verification_status"
-    } == {k: v for k, v in saved.items() if k != "verification_status"}
+    assert {k: v for k, v in book["positions"][0].items() if k != "verification_status"} == {
+        k: v for k, v in saved.items() if k != "verification_status"
+    }
     assert book["positions"][0]["verification_status"] == "unavailable"
 
 
 def test_report_discloses_admission_and_point_in_time_gaps():
-    from report import data_health_md
+    from quant_agent.infrastructure.reporting.investment import data_health_md
 
     text = data_health_md(
         {
@@ -431,7 +420,7 @@ def test_report_discloses_admission_and_point_in_time_gaps():
 
 
 def test_invalid_ingest_dates_are_not_hidden_by_completed_session_filter(frame):
-    from data_quality import build_data_contract, completed_bars
+    from quant_agent.domain.market.quality import build_data_contract, completed_bars
 
     frame["date"] = frame.date.astype(str)
     frame.loc[99, "date"] = "bad"
@@ -446,7 +435,7 @@ def test_invalid_ingest_dates_are_not_hidden_by_completed_session_filter(frame):
 
 
 def test_missing_explicit_reference_blocks_without_crashing(frame):
-    from data_quality import build_data_contract
+    from quant_agent.domain.market.quality import build_data_contract
 
     context = build_data_contract(
         {("cn", "000001", "qfq"): frame},
@@ -488,8 +477,8 @@ def test_snapshot_writer_does_not_sort_or_deduplicate_corrupt_input(frame, tmp_p
 
 
 def test_adapter_does_not_hide_malformed_rows_or_cache_repaired_input(monkeypatch):
-    import fetcher
-    import store
+    import quant_agent.infrastructure.market_data.fetcher as fetcher
+    import quant_agent.infrastructure.persistence.store as store
 
     class Response:
         def json(self):
@@ -513,9 +502,7 @@ def test_adapter_does_not_hide_malformed_rows_or_cache_repaired_input(monkeypatc
     assert not writes
 
 
-def test_bad_data_context_does_not_backfill_new_pending_records(
-    frame, tmp_path, monkeypatch
-):
+def test_bad_data_context_does_not_backfill_new_pending_records(frame, tmp_path, monkeypatch):
     monkeypatch.setattr(ev, "STATE", str(tmp_path))
     monkeypatch.setattr(portfolio, "TRADES_PATH", str(tmp_path / "trades.csv"))
     params = {"backtest": {"hold_days": 1}}
@@ -540,7 +527,7 @@ def test_bad_data_context_does_not_backfill_new_pending_records(
 
 
 def test_old_reference_cannot_make_itself_fresh_by_backdating_signal(frame):
-    from data_quality import build_data_contract
+    from quant_agent.domain.market.quality import build_data_contract
 
     context = build_data_contract(
         {("cn", "000001", "qfq"): frame},

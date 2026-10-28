@@ -3,17 +3,12 @@
 @author cylovelife
 """
 
-from pathlib import Path
-import sys
-
 import numpy as np
 import pandas as pd
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from competition_timeseries import ar_features, fit_arx  # noqa: E402
-from competition_submission import server_rows  # noqa: E402
+from quant_agent.competitions.stock_price.submission import server_rows  # noqa: E402
+from quant_agent.competitions.stock_price.timeseries import ar_features, fit_arx  # noqa: E402
 
 
 def test_autoregressive_features_are_prefix_invariant():

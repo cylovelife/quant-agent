@@ -15,10 +15,10 @@
 合法的成交、拒单、未成交和待核验结果都返回进程状态0；输入／文件／数据库错误返回2，错误JSON写stderr。
 不能与其他操作选项混用。无需提供券商账户或真实成交。
 
-- `src/execution.py`：不可变订单、证券、目标日交易事实和资金／单证券持仓快照；统一成交函数 `match_order`。
-- `src/execution_data.py`：复用 `LocalData` 的只读raw分区，只取目标日开盘及其获取元数据，拒绝周／月聚合行情。
-- `src/backtest.py::replay_paper_order`：对显式历史订单预演同一成交函数。
-- `src/portfolio.py::preview_paper_order`：对显式订单和当前快照预演同一函数，不修改原持仓、交易文件或现金。
+- `src/quant_agent/domain/trading/execution.py`：不可变订单、证券、目标日交易事实和资金／单证券持仓快照；统一成交函数 `match_order`。
+- `src/quant_agent/infrastructure/persistence/execution_data.py`：复用 `LocalData` 的只读raw分区，只取目标日开盘及其获取元数据，拒绝周／月聚合行情。
+- `src/quant_agent/application/research/backtest.py::replay_paper_order`：对显式历史订单预演同一成交函数。
+- `src/quant_agent/application/investing/portfolio.py::preview_paper_order`：对显式订单和当前快照预演同一函数，不修改原持仓、交易文件或现金。
 - `params/execution_v1.json`：成本与基础规则版本 `paper_open_v1`，有效起点2026-07-06，核验日2026-10-26。
   内容指纹 `policy_id` 包括参数、来源和假设；调整成本会改变指纹。
 

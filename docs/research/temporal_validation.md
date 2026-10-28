@@ -42,10 +42,10 @@
 # 四项通过
 .venv/bin/python tests/offline_e2e.py --synthetic
 # 构造行情端到端通过，内含 161 项回归
-.venv/bin/ruff check src/temporal_validation.py tests/test_temporal_validation.py src/model_select.py src/exit_model.py src/ml_eval.py src/value_track.py
+.venv/bin/ruff check src/quant_agent/domain/research/validation.py tests/test_temporal_validation.py src/quant_agent/application/research/model_selection.py src/quant_agent/domain/research/exit_model.py src/quant_agent/domain/research/ml_eval.py src/quant_agent/application/research/value_tracking.py
 # 通过
 ```
 
 构造测试覆盖同日分组、跨界及未成熟标签清除、缺结束日与未结束测试日期拒绝、短线／长期权重／离场阈值及 ML 的测试段扰动、ML 未来截断、原始行情截止后截断、历史实际标签结束日和报告渲染。未做真实联网数据、历史 point-in-time 完整性或正式策略晋级验证。先前历史结果及缺结束日的旧缓存不作为新口径下的测试证据。
 
-本步路由：`executing-plans`、`test-driven-development`、`systematic-debugging`、`verification-before-completion`。读取项目 `AGENTS.md`、`skills-index.md`、`engineering-workflow.md`、`python/code-style.md`、`python/data-runtime.md`、`shared-code-change-safety.md`。项目当前 `run.py`、`src/report.py`、`tests/offline_e2e.py` 的四条既有 Ruff 告警仍在，本步相关新增模块及模型模块检查通过；没有修改生产参数或现有 `evaluate.update_weights` 门禁。
+本步路由：`executing-plans`、`test-driven-development`、`systematic-debugging`、`verification-before-completion`。读取项目 `AGENTS.md`、`skills-index.md`、`engineering-workflow.md`、`python/code-style.md`、`python/data-runtime.md`、`shared-code-change-safety.md`。项目当前 `run.py`、`src/quant_agent/infrastructure/reporting/investment.py`、`tests/offline_e2e.py` 的四条既有 Ruff 告警仍在，本步相关新增模块及模型模块检查通过；没有修改生产参数或现有 `evaluate.update_weights` 门禁。

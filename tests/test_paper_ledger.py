@@ -14,21 +14,22 @@ from pathlib import Path
 
 import pytest
 
+from quant_agent.infrastructure.configuration import load_policy
+
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
 
 
 @pytest.fixture
 def modules():
-    import execution
-    import paper_ledger
+    import quant_agent.application.paper.ledger as paper_ledger
+    import quant_agent.domain.trading.execution as execution
 
     return execution, paper_ledger
 
 
 @pytest.fixture
 def policy(modules):
-    return modules[0].load_policy(ROOT / "params/execution_v1.json")
+    return load_policy(ROOT / "params/execution_v1.json")
 
 
 @pytest.fixture
@@ -86,16 +87,12 @@ def test_buy_sell_events_reconcile_to_cash_quantity_and_fees(modules, ledger):
     assert buy["quantity_after"] == 100
     before = ledger.snapshot("fixture")
     assert before["positions"][0]["quantity"] == 100
-    same_day = ledger.execute(
-        "fixture", *inputs(execution, "sell-too-soon", side="sell")
-    )
+    same_day = ledger.execute("fixture", *inputs(execution, "sell-too-soon", side="sell"))
     assert same_day["reason"] == "insufficient_sellable_quantity"
     assert ledger.snapshot("fixture")["cash"] == before["cash"]
     sell = ledger.execute(
         "fixture",
-        *inputs(
-            execution, "sell-1", side="sell", signal="2026-10-27", session="2026-10-28"
-        ),
+        *inputs(execution, "sell-1", side="sell", signal="2026-10-27", session="2026-10-28"),
     )
     assert sell["status"] == "filled" and sell["quantity_after"] == 0
     snapshot = ledger.snapshot("fixture")
@@ -108,9 +105,7 @@ def test_buy_sell_events_reconcile_to_cash_quantity_and_fees(modules, ledger):
     }
     events = ledger.events("fixture")
     assert len(events) == 11
-    assert sum(Decimal(row["cash_delta"]) for row in events) == Decimal(
-        snapshot["cash"]
-    )
+    assert sum(Decimal(row["cash_delta"]) for row in events) == Decimal(snapshot["cash"])
     assert sum(row["quantity_delta"] for row in events) == 0
     assert snapshot["reconciled"] is True
 
@@ -121,7 +116,7 @@ def test_repeat_is_exactly_once_even_after_refetch_or_reopen(modules, ledger):
     first = ledger.execute("fixture", order, instrument, quote)
     reopened = module.PaperLedger(ledger.path)
     revised = replace(quote, open_price="10.50", fetched_at="2026-10-28T18:00:00+08:00")
-    from portfolio import record_paper_order
+    from quant_agent.application.investing.portfolio import record_paper_order
 
     again = record_paper_order(reopened, "fixture", order, instrument, revised)
     assert again["replayed"] is True
@@ -175,9 +170,7 @@ def test_duplicate_and_competing_writers_are_serialized(modules, policy, tmp_pat
     book.create_account("two", "1006.01", "2026-10-26", policy)
 
     def competing(number):
-        return module.PaperLedger(book.path).execute(
-            "two", *inputs(execution, f"order-{number}")
-        )
+        return module.PaperLedger(book.path).execute("two", *inputs(execution, f"order-{number}"))
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(competing, range(2)))
@@ -250,9 +243,7 @@ def test_no_backdated_new_order_or_prelaunch_signal(modules, ledger):
     with pytest.raises(module.LedgerConflict, match="start"):
         ledger.execute(
             "fixture",
-            *inputs(
-                execution, "before-start", signal="2026-10-23", session="2026-10-26"
-            ),
+            *inputs(execution, "before-start", signal="2026-10-23", session="2026-10-26"),
         )
 
 
@@ -261,9 +252,7 @@ def test_fifo_sell_keeps_unsold_lots_and_no_negative_quantity(modules, ledger):
     ledger.execute("fixture", *inputs(execution, "lot-1", quantity=200))
     ledger.execute(
         "fixture",
-        *inputs(
-            execution, "lot-2", quantity=100, signal="2026-10-27", session="2026-10-28"
-        ),
+        *inputs(execution, "lot-2", quantity=100, signal="2026-10-27", session="2026-10-28"),
     )
     ledger.execute(
         "fixture",
@@ -278,11 +267,7 @@ def test_fifo_sell_keeps_unsold_lots_and_no_negative_quantity(modules, ledger):
     )
     snapshot = ledger.snapshot("fixture")
     lots = snapshot["positions"][0]["lots"]
-    assert (
-        len(lots) == 1
-        and lots[0]["source_order_id"] == "lot-2"
-        and lots[0]["quantity"] == 100
-    )
+    assert len(lots) == 1 and lots[0]["source_order_id"] == "lot-2" and lots[0]["quantity"] == 100
     result = ledger.execute(
         "fixture",
         *inputs(
@@ -310,19 +295,14 @@ def test_initial_funding_is_idempotent_accounts_are_separate_and_policy_is_froze
     raw["profiles"]["cn_mainboard"]["commission_min"] = "10"
     altered = tmp_path / "cost.json"
     altered.write_text(json.dumps(raw))
-    changed = execution.load_policy(altered)
+    changed = load_policy(altered)
     with pytest.raises(module.LedgerConflict):
         ledger.create_account("fixture", "50000", "2026-10-26", changed)
     ledger.create_account("other", "50000", "2026-10-26", changed)
     first = ledger.execute("fixture", *inputs(execution))
     other = ledger.execute("other", *inputs(execution))
-    assert (
-        first["fees"]["commission"] == "5.00" and other["fees"]["commission"] == "10.00"
-    )
-    assert (
-        first["policy_id"] == policy.policy_id
-        and other["policy_id"] == changed.policy_id
-    )
+    assert first["fees"]["commission"] == "5.00" and other["fees"]["commission"] == "10.00"
+    assert first["policy_id"] == policy.policy_id and other["policy_id"] == changed.policy_id
 
 
 def test_events_are_append_only_and_corrupt_book_never_becomes_empty(modules, ledger):
@@ -340,9 +320,7 @@ def test_events_are_append_only_and_corrupt_book_never_becomes_empty(modules, le
         ledger.execute("fixture", *inputs(execution, "buy-2"))
 
 
-def test_market_store_or_missing_db_cannot_be_reinitialized_as_cash_ledger(
-    modules, tmp_path
-):
+def test_market_store_or_missing_db_cannot_be_reinitialized_as_cash_ledger(modules, tmp_path):
     module = modules[1]
     market = tmp_path / "market.db"
     with sqlite3.connect(market) as con:
@@ -359,9 +337,7 @@ def test_market_store_or_missing_db_cannot_be_reinitialized_as_cash_ledger(
     assert not missing.exists()
 
 
-def test_legacy_rehearsal_copies_but_never_invents_cash_or_quantity(
-    modules, tmp_path, monkeypatch
-):
+def test_legacy_rehearsal_copies_but_never_invents_cash_or_quantity(modules, tmp_path, monkeypatch):
     module = modules[1]
     old = tmp_path / "positions.json"
     old.write_text(
@@ -403,9 +379,7 @@ def test_legacy_rehearsal_copies_but_never_invents_cash_or_quantity(
     assert not (tmp_path / "failed-copy").exists() and old.read_bytes() == original
 
 
-def test_cli_records_using_ledger_cash_instead_of_request_account(
-    modules, ledger, tmp_path
-):
+def test_cli_records_using_ledger_cash_instead_of_request_account(modules, ledger, tmp_path):
     execution, _ = modules
     order, instrument, quote = inputs(execution)
     bars = tmp_path / "prices.db"
@@ -457,9 +431,7 @@ def test_cli_records_using_ledger_cash_instead_of_request_account(
     assert retried_without_prices.returncode == 0, retried_without_prices.stderr
     assert json.loads(retried_without_prices.stdout)["replayed"]
     status_file = tmp_path / "status.json"
-    status_file.write_text(
-        json.dumps({"ledger_path": str(ledger.path), "account_id": "fixture"})
-    )
+    status_file.write_text(json.dumps({"ledger_path": str(ledger.path), "account_id": "fixture"}))
     status = subprocess.run(
         [sys.executable, str(ROOT / "run.py"), "--ledger-status", str(status_file)],
         cwd=tmp_path,
@@ -483,9 +455,7 @@ def test_cli_records_using_ledger_cash_instead_of_request_account(
 
 
 @pytest.mark.parametrize("cash", ["NaN", "0.001", "-1", True, "1000000000000000000"])
-def test_invalid_initial_cash_cannot_create_partial_origin(
-    modules, policy, ledger, cash
-):
+def test_invalid_initial_cash_cannot_create_partial_origin(modules, policy, ledger, cash):
     before = ledger.snapshot("fixture")
     with pytest.raises(ValueError):
         ledger.create_account("bad-origin", cash, "2026-10-26", policy)
@@ -512,7 +482,7 @@ def test_retried_same_day_pending_uses_cash_after_intervening_order(modules, led
 
 def test_market_cache_mode_never_disables_cash_accounting(modules, ledger, monkeypatch):
     execution, module = modules
-    import store
+    import quant_agent.infrastructure.persistence.store as store
 
     monkeypatch.setattr(store, "_ENABLED", False)
     assert ledger.execute("fixture", *inputs(execution))["status"] == "filled"
@@ -528,19 +498,13 @@ def test_filled_order_cannot_be_canceled_into_a_refund(modules, ledger):
     assert ledger.snapshot("fixture") == before
 
 
-def test_subcent_digits_beyond_decimal_context_are_not_rounded_away(
-    modules, policy, ledger
-):
+def test_subcent_digits_beyond_decimal_context_are_not_rounded_away(modules, policy, ledger):
     with pytest.raises(ValueError):
-        ledger.create_account(
-            "fractional", "1.0000000000000000000000000001", "2026-10-26", policy
-        )
+        ledger.create_account("fractional", "1.0000000000000000000000000001", "2026-10-26", policy)
 
 
-def test_failed_schema_creation_leaves_no_half_initialized_ledger(
-    modules, tmp_path, monkeypatch
-):
-    import store
+def test_failed_schema_creation_leaves_no_half_initialized_ledger(modules, tmp_path, monkeypatch):
+    import quant_agent.infrastructure.persistence.store as store
 
     original = store.PAPER_DDL
     monkeypatch.setattr(store, "PAPER_DDL", (*original, "INVALID DDL"))
@@ -552,9 +516,7 @@ def test_failed_schema_creation_leaves_no_half_initialized_ledger(
     modules[1].PaperLedger.create(path)
 
 
-def test_cash_ledger_cannot_be_migrated_by_market_cache_connector(
-    modules, ledger, tmp_path
-):
+def test_cash_ledger_cannot_be_migrated_by_market_cache_connector(modules, ledger, tmp_path):
     import os
 
     before = ledger.path.read_bytes()
@@ -568,7 +530,7 @@ def test_cash_ledger_cannot_be_migrated_by_market_cache_connector(
         [
             sys.executable,
             "-c",
-            "import store; assert store.connect() is None; print(str(store.last_error()))",
+            "from quant_agent.infrastructure.persistence import store; assert store.connect() is None; print(str(store.last_error()))",
         ],
         cwd=tmp_path,
         env=env,

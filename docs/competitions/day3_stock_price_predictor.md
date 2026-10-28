@@ -60,16 +60,16 @@
 
 新增独立模块：
 
-- `src/competition_data.py`：先验SHA/副本/列/sheet/行数校验；日期和OHLC约束；价格、成熟训练标签、样例分离，只读源文件。
-- `src/competition_validation.py`：实际标签结束日的两段时间窗口与purge，不修改既有投资验证器。
-- `src/competition_metrics.py`：二分类计数、Accuracy、Balanced Accuracy和原序Id输出，拒绝覆盖。
-- `src/competition_baseline.py`：18特征、三个固定候选、训练内预处理、选型锁定、保留测试与提交生成。
+- `src/quant_agent/competitions/stock_price/data.py`：先验SHA/副本/列/sheet/行数校验；日期和OHLC约束；价格、成熟训练标签、样例分离，只读源文件。
+- `src/quant_agent/competitions/stock_price/validation.py`：实际标签结束日的两段时间窗口与purge，不修改既有投资验证器。
+- `src/quant_agent/competitions/stock_price/metrics.py`：二分类计数、Accuracy、Balanced Accuracy和原序Id输出，拒绝覆盖。
+- `src/quant_agent/competitions/stock_price/baseline.py`：18特征、三个固定候选、训练内预处理、选型锁定、保留测试与提交生成。
 - `tests/test_competition_pipeline.py`：临时合成xlsx、文件/语义破坏、未来扰动、边界清除、预处理不重拟合、选型隔离和重复运行拒绝。
 
 实际执行命令：
 
 ```bash
-.venv/bin/python src/competition_baseline.py \
+.venv/bin/python -m quant_agent.competitions.stock_price.baseline \
   --raw state/competitions/stock-price-predictor/raw \
   --contract docs/competitions/stock_price_predictor_contract.json \
   --protocol docs/competitions/stock_price_predictor_protocol.json \
@@ -89,7 +89,7 @@
 ```bash
 .venv/bin/python -m pytest -q tests/test_competition_pipeline.py tests/test_temporal_validation.py tests/test_research_experiments.py
 # 38 passed in 11.77s
-.venv/bin/ruff check src/competition_*.py tests/test_competition_pipeline.py
+.venv/bin/ruff check src/quant_agent/competitions/stock_price/ tests/test_competition_pipeline.py
 # All checks passed
 ```
 

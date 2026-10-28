@@ -4,7 +4,6 @@
 """
 
 import json
-import sys
 from copy import deepcopy
 from pathlib import Path
 
@@ -13,12 +12,11 @@ import pandas as pd
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
 
-import evaluate as ev  # noqa: E402
-import portfolio  # noqa: E402
-from backtest import backtest_symbol  # noqa: E402
-from factor_eval import build_panel, forward_return  # noqa: E402
+import quant_agent.application.investing.evaluation as ev  # noqa: E402
+import quant_agent.application.investing.portfolio as portfolio  # noqa: E402
+from quant_agent.application.research.backtest import backtest_symbol  # noqa: E402
+from quant_agent.domain.research.factors import build_panel, forward_return  # noqa: E402
 
 
 @pytest.fixture
@@ -107,9 +105,7 @@ def archive(params, day="2026-09-25", code="000001", market="cn"):
 
 
 @pytest.mark.parametrize("early_stop", [False, True])
-def test_same_trade_across_research_backtest_review_and_book(
-    params, bars, isolated, early_stop
-):
+def test_same_trade_across_research_backtest_review_and_book(params, bars, isolated, early_stop):
     if early_stop:
         params["backtest"]["stop_loss"] = -0.05
         bars.loc[72, "close"] = 99.0
@@ -168,26 +164,20 @@ def test_signal_archive_is_frozen_and_keeps_legacy_file(params, isolated):
 
 def test_immature_label_is_not_written_and_book_is_open(params, bars, isolated):
     saved = archive(params)
-    result = ev.evaluate_previous(
-        quote_must_not_be_used, "2026-10-09", kline_fn=lambda *a: bars
-    )
+    result = ev.evaluate_previous(quote_must_not_be_used, "2026-10-09", kline_fn=lambda *a: bars)
     assert result.get("skipped")
     assert not (isolated / "outcomes_v2.csv").exists()
     book = {"positions": []}
     portfolio.add_positions(book, {"cn": saved["picks"]}, params, "2026-09-25")
     cal = portfolio.trading_calendar({("cn", "000001"): bars})
-    assert not portfolio.settle_book(
-        book, {}, cal, params, "2026-10-09", kline_fn=lambda *a: bars
-    )
+    assert not portfolio.settle_book(book, {}, cal, params, "2026-10-09", kline_fn=lambda *a: bars)
     pos = portfolio.open_positions(book)[0]
     assert pos["entry_price"] == 110.0
     assert pos["days_held"] == 4
     assert pos["label_end_date"] is None
 
 
-@pytest.mark.parametrize(
-    "problem", ["none", "empty", "missing-signal", "bad-open", "bad-close"]
-)
+@pytest.mark.parametrize("problem", ["none", "empty", "missing-signal", "bad-open", "bad-close"])
 def test_missing_or_bad_bars_do_not_create_labels(params, bars, isolated, problem):
     archive(params)
     if problem == "none":
@@ -199,9 +189,7 @@ def test_missing_or_bad_bars_do_not_create_labels(params, bars, isolated, proble
     else:
         frame = bars.copy()
         frame.loc[71, "open" if problem == "bad-open" else "close"] = np.nan
-    result = ev.evaluate_previous(
-        quote_must_not_be_used, "2026-10-26", kline_fn=lambda *a: frame
-    )
+    result = ev.evaluate_previous(quote_must_not_be_used, "2026-10-26", kline_fn=lambda *a: frame)
     assert result.get("skipped")
     assert not (isolated / "outcomes_v2.csv").exists()
 
@@ -210,18 +198,14 @@ def test_missed_runs_settle_all_archives_and_keep_saved_policy(params, bars, iso
     first = archive(params)
     archive(params, day="2026-09-28", code="000002")
     params["backtest"]["hold_days"] = 1
-    result = ev.evaluate_previous(
-        quote_must_not_be_used, "2026-10-26", kline_fn=lambda *a: bars
-    )
+    result = ev.evaluate_previous(quote_must_not_be_used, "2026-10-26", kline_fn=lambda *a: bars)
     assert result["count"] == 2
     original = next(r for r in result["details"] if r["code"] == "000001")
     assert original["label_end_date"] == "2026-10-12"
     assert original["label_id"] == first["label_id"]
 
 
-def test_unversioned_picks_outcomes_and_positions_are_not_reinterpreted(
-    params, bars, isolated
-):
+def test_unversioned_picks_outcomes_and_positions_are_not_reinterpreted(params, bars, isolated):
     legacy = {
         "date": "2026-09-25",
         "picks": [{"code": "000001", "market": "cn", "entry_price": 100}],
@@ -231,9 +215,9 @@ def test_unversioned_picks_outcomes_and_positions_are_not_reinterpreted(
     old_outcome = isolated / "outcomes.csv"
     old_outcome.write_text("date,code,ret\n2026-09-25,000001,0.5\n")
     before = old_outcome.read_bytes()
-    assert ev.evaluate_previous(
-        quote_must_not_be_used, "2026-10-26", kline_fn=lambda *a: bars
-    ).get("skipped")
+    assert ev.evaluate_previous(quote_must_not_be_used, "2026-10-26", kline_fn=lambda *a: bars).get(
+        "skipped"
+    )
     assert not ev.update_weights(params, min_samples=1, min_days=1)["updated"]
     book = {
         "positions": [
@@ -277,9 +261,7 @@ def test_fixed_horizon_and_strategy_labels_are_explicit(params, bars):
     bars.loc[72, "close"] = 99.0
     bars.loc[72, "low"] = 99.0
     fixed = build_panel({("cn", "000001"): bars}, params)
-    strategy = build_panel(
-        {("cn", "000001"): bars}, params, label_spec=params["backtest"]
-    )
+    strategy = build_panel({("cn", "000001"): bars}, params, label_spec=params["backtest"])
     a = fixed[fixed.date == "2026-09-25"].iloc[0]
     b = strategy[strategy.date == "2026-09-25"].iloc[0]
     assert a.fwd_ret == pytest.approx(0.1)
@@ -294,9 +276,7 @@ def test_backfill_is_idempotent_and_uses_saved_next_open(params, bars, isolated)
     cal = portfolio.trading_calendar({("cn", "000001"): bars})
     params["backtest"]["hold_days"] = 1
     for _ in range(2):
-        portfolio.backfill_from_picks(
-            book, str(path), lambda *a: bars, params, "2026-10-26", cal
-        )
+        portfolio.backfill_from_picks(book, str(path), lambda *a: bars, params, "2026-10-26", cal)
     assert len(book["positions"]) == 1
     assert book["positions"][0]["entry_price"] == 110.0
     assert book["positions"][0]["exit_date"] == "2026-10-12"
@@ -318,18 +298,15 @@ def test_missing_expected_session_is_not_shifted_to_later_entry(params, bars, is
 
 def test_same_code_on_two_markets_is_not_deduplicated(params, bars, isolated):
     ev.save_today_picks(
-        [
-            {"code": "000001", "name": "fixture", "market": market}
-            for market in ("cn", "etf")
-        ],
+        [{"code": "000001", "name": "fixture", "market": market} for market in ("cn", "etf")],
         {},
         "2026-09-25",
         params=params,
     )
     assert (
-        ev.evaluate_previous(
-            quote_must_not_be_used, "2026-10-26", kline_fn=lambda *a: bars
-        )["count"]
+        ev.evaluate_previous(quote_must_not_be_used, "2026-10-26", kline_fn=lambda *a: bars)[
+            "count"
+        ]
         == 2
     )
     assert len(ev._read_outcomes(str(isolated / "outcomes_v2.csv"))) == 2
@@ -350,9 +327,7 @@ def test_future_changes_cannot_change_mature_review(params, bars, isolated):
     archive(params)
     frame = bars.copy()
     frame.loc[frame.date > "2026-10-12", "close"] *= 10
-    result = ev.evaluate_previous(
-        quote_must_not_be_used, "2026-10-12", kline_fn=lambda *a: frame
-    )
+    result = ev.evaluate_previous(quote_must_not_be_used, "2026-10-12", kline_fn=lambda *a: frame)
     row = result["details"][0]
     assert row["ret"] == pytest.approx(0.1)
     frozen = (isolated / "outcomes_v2.csv").read_bytes()
@@ -368,9 +343,7 @@ def test_open_position_rejects_revised_fill_or_observed_close(params, bars, isol
     book = {"positions": []}
     portfolio.add_positions(book, {"cn": saved["picks"]}, params, "2026-09-25")
     calendar = portfolio.trading_calendar({("cn", "000001"): bars})
-    portfolio.settle_book(
-        book, {}, calendar, params, "2026-09-28", kline_fn=lambda *a: bars
-    )
+    portfolio.settle_book(book, {}, calendar, params, "2026-09-28", kline_fn=lambda *a: bars)
     observed = deepcopy(book["positions"][0])
     changed = bars.copy()
     changed.loc[71, "close"] += 1
@@ -383,7 +356,7 @@ def test_open_position_rejects_revised_fill_or_observed_close(params, bars, isol
 
 
 def test_unmatched_target_cannot_update_current_weights(params, isolated):
-    from trade_semantics import LABEL_VERSION, LabelSpec
+    from quant_agent.domain.trading.labels import LABEL_VERSION, LabelSpec
 
     pd.DataFrame(
         [
@@ -400,23 +373,17 @@ def test_unmatched_target_cannot_update_current_weights(params, isolated):
     assert not ev.update_weights(params, min_samples=1, min_days=1)["updated"]
 
 
-def test_unsupported_market_remains_archived_without_inventing_open(
-    params, bars, isolated
-):
+def test_unsupported_market_remains_archived_without_inventing_open(params, bars, isolated):
     saved = archive(params, market="fund")
-    result = ev.evaluate_previous(
-        quote_must_not_be_used, "2026-10-26", kline_fn=lambda *a: bars
-    )
+    result = ev.evaluate_previous(quote_must_not_be_used, "2026-10-26", kline_fn=lambda *a: bars)
     assert result.get("skipped")
     assert result["unavailable"] == 1
     book = {"positions": []}
-    assert not portfolio.add_positions(
-        book, {"fund": saved["picks"]}, params, "2026-09-25"
-    )
+    assert not portfolio.add_positions(book, {"fund": saved["picks"]}, params, "2026-09-25")
 
 
 def test_versioned_weights_keep_gates_writeback_and_idempotence(params, isolated):
-    from trade_semantics import LABEL_VERSION, LabelSpec
+    from quant_agent.domain.trading.labels import LABEL_VERSION, LabelSpec
 
     params["weights"] = {
         "boll": 0.25,
@@ -452,15 +419,10 @@ def test_versioned_weights_keep_gates_writeback_and_idempotence(params, isolated
     assert first["updated"]
     assert params["weights"]["boll"] > 0.25
     assert not ev.update_weights(params, min_samples=20, min_days=1)["updated"]
-    assert (
-        json.loads((isolated / "params.json").read_text())["weights"]
-        == params["weights"]
-    )
+    assert json.loads((isolated / "params.json").read_text())["weights"] == params["weights"]
 
 
-def test_missing_expected_tail_is_unavailable_instead_of_immature(
-    params, bars, isolated
-):
+def test_missing_expected_tail_is_unavailable_instead_of_immature(params, bars, isolated):
     archive(params)
     calendar = {"cn": bars.date.dt.strftime("%Y-%m-%d").tolist()}
     result = ev.evaluate_previous(
@@ -474,7 +436,7 @@ def test_missing_expected_tail_is_unavailable_instead_of_immature(
 
 
 def test_legacy_risk_is_visible_without_becoming_a_new_fill(params, isolated):
-    from report import book_overview_md, brief_action_rows
+    from quant_agent.infrastructure.reporting.investment import book_overview_md, brief_action_rows
 
     book = {
         "positions": [
@@ -506,32 +468,25 @@ def test_legacy_risk_is_visible_without_becoming_a_new_fill(params, isolated):
     assert "旧口径止损复核" in text
     assert "不混入v2收益统计" in text
     assert "平均浮动" not in text
-    candidates = {
-        "cn": pd.DataFrame([{"code": "000001", "name": "legacy", "score": 90}])
-    }
+    candidates = {"cn": pd.DataFrame([{"code": "000001", "name": "legacy", "score": 90}])}
     assert not brief_action_rows(candidates, [], book=book)
 
 
 def test_report_distinguishes_pending_signal_and_mature_return(params, bars, isolated):
-    from report import book_overview_md, eval_md
+    from quant_agent.infrastructure.reporting.investment import book_overview_md, eval_md
 
     saved = archive(params)
     book = {"positions": []}
     portfolio.add_positions(book, {"cn": saved["picks"]}, params, "2026-09-25")
     assert "待入场信号" in book_overview_md(book, [])
-    result = ev.evaluate_previous(
-        quote_must_not_be_used, "2026-10-26", kline_fn=lambda *a: bars
-    )
+    result = ev.evaluate_previous(quote_must_not_be_used, "2026-10-26", kline_fn=lambda *a: bars)
     rendered = eval_md(result)
     assert "未扣费模拟收益" in rendered
     assert "次日平均收益" not in rendered
 
 
 def test_intraday_run_can_reuse_but_not_invent_previous_signal(params, isolated):
-    assert (
-        ev.save_today_picks([], {}, "2026-09-25", params=params, allow_new=False)
-        is None
-    )
+    assert ev.save_today_picks([], {}, "2026-09-25", params=params, allow_new=False) is None
     assert not list(isolated.glob("picks_v2_*.json"))
     archive(params)
     path = ev.save_today_picks([], {}, "2026-09-25", params=params, allow_new=False)

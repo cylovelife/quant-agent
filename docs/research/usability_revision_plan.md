@@ -250,7 +250,7 @@ Harness沿用项目现有边界，本轮无需改动。
 
 日期：2026-10-26。用户认可任务1模板后，按约进入任务2；真实政策未被代填或视为已批准。
 
-新增`src/trade_semantics.py`集中管理信号／日线开盘／收盘终点及冻结离场规则。
+新增`src/quant_agent/domain/trading/labels.py`集中管理信号／日线开盘／收盘终点及冻结离场规则。
 因子研究保留固定持有期默认标签，显式策略标签才含止盈止损，二者有不同指纹；
 新回测、复盘和账本共用解析器，面板保留实际标签结束日；采集运行日与信号截止日分开，
 盘中不补造上一日首次信号，避免回写当日采集数据或引入事后候选池。
@@ -276,12 +276,12 @@ Harness沿用项目现有边界，本轮无需改动。
 # 四项基础自检均通过
 .venv/bin/python tests/offline_e2e.py --synthetic
 # 构造12个序列的集成自检通过；并非真实行情回测收益验证
-.venv/bin/ruff check src/trade_semantics.py src/backtest.py src/factor_eval.py src/evaluate.py src/portfolio.py tests/test_trade_semantics.py
-.venv/bin/ruff format --check src/trade_semantics.py tests/test_trade_semantics.py
+.venv/bin/ruff check src/quant_agent/domain/trading/labels.py src/quant_agent/application/research/backtest.py src/quant_agent/domain/research/factors.py src/quant_agent/application/investing/evaluation.py src/quant_agent/application/investing/portfolio.py tests/test_trade_semantics.py
+.venv/bin/ruff format --check src/quant_agent/domain/trading/labels.py tests/test_trade_semantics.py
 git diff --check
 ```
 
-`run.py`、`src/report.py`、`tests/offline_e2e.py`另做语法检查与HEAD基线Ruff比较：
+`run.py`、`src/quant_agent/infrastructure/reporting/investment.py`、`tests/offline_e2e.py`另做语法检查与HEAD基线Ruff比较：
 原有E402／E731、F841、E741共4项未清理，本步无新增诊断，不声称全仓lint为零。
 新增文件有作者标记，未新增依赖或修改运行配置／真实参数。
 
@@ -315,7 +315,7 @@ README同步新旧文件及未成熟标签语义。实际加载`executing-plans`
 .venv/bin/python tests/offline_datasources.py
 .venv/bin/python tests/offline_long.py
 .venv/bin/python tests/offline_ml.py
-.venv/bin/ruff check src/indicators.py src/backtest.py src/phase_cache.py tests/test_indicator_backtest_boundaries.py
+.venv/bin/ruff check src/quant_agent/domain/market/indicators.py src/quant_agent/application/research/backtest.py src/quant_agent/infrastructure/persistence/phase_cache.py tests/test_indicator_backtest_boundaries.py
 .venv/bin/ruff format --check tests/test_indicator_backtest_boundaries.py
 git diff --check
 ```

@@ -17,11 +17,14 @@ import pandas as pd
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
 
-from local_data import LocalData  # noqa: E402
-from data_snapshot import publish_snapshot, read_snapshot, sync_snapshot  # noqa: E402
-from daily_research import research_daily, completed_date  # noqa: E402
+from quant_agent.application.research.daily import completed_date, research_daily  # noqa: E402
+from quant_agent.infrastructure.persistence.local import LocalData  # noqa: E402
+from quant_agent.infrastructure.persistence.snapshots import (  # noqa: E402
+    publish_snapshot,
+    read_snapshot,
+    sync_snapshot,
+)  # noqa: E402
 
 
 @pytest.fixture
@@ -103,9 +106,7 @@ def test_aggregation_is_cutoff_safe_and_uses_actual_date(db, frequency):
     insert(db)
     reader = LocalData(db)
     daily = reader.get_data("cn", ["000001"], end="2026-10-07")["000001"]
-    bars = reader.get_data("cn", ["000001"], end="2026-10-07", frequency=frequency)[
-        "000001"
-    ]
+    bars = reader.get_data("cn", ["000001"], end="2026-10-07", frequency=frequency)["000001"]
     last = bars.iloc[-1]
     assert last.date == pd.Timestamp("2026-10-07")
     subset = daily if frequency == "1M" else daily[daily.date >= "2026-10-05"]
@@ -126,9 +127,7 @@ def test_limit_is_per_symbol_and_sql_is_parameterized(db):
 
 
 def snapshot_frames(db):
-    return {
-        ("cn", c, "qfq"): f for c, f in LocalData(db).get_data("cn", ["000001"]).items()
-    }
+    return {("cn", c, "qfq"): f for c, f in LocalData(db).get_data("cn", ["000001"]).items()}
 
 
 def test_snapshots_are_content_addressed_and_sync_offline(db, tmp_path):
@@ -196,12 +195,8 @@ def test_daily_ledger_reuses_input_and_detects_revision(db, tmp_path):
     insert(db)
     params = json.loads((ROOT / "params/params.json").read_text())
     universe = {"cn": ["000001", "missing"]}
-    first = research_daily(
-        db, universe, params, tmp_path / "research", asof="2026-10-26"
-    )
-    again = research_daily(
-        db, universe, params, tmp_path / "research", asof="2026-10-27"
-    )
+    first = research_daily(db, universe, params, tmp_path / "research", asof="2026-10-26")
+    again = research_daily(db, universe, params, tmp_path / "research", asof="2026-10-27")
     assert first["run_id"] == again["run_id"]
     assert again["reused"] is True
     assert first["promotion_allowed"] is False
@@ -209,9 +204,7 @@ def test_daily_ledger_reuses_input_and_detects_revision(db, tmp_path):
     assert first["status"] == "insufficient_evidence"
     with sqlite3.connect(db) as conn:
         conn.execute("UPDATE kline SET close=close+0.01 WHERE date='2026-10-01'")
-    revision = research_daily(
-        db, universe, params, tmp_path / "research", asof="2026-10-26"
-    )
+    revision = research_daily(db, universe, params, tmp_path / "research", asof="2026-10-26")
     assert revision["run_id"] != first["run_id"]
     assert revision["change"] == "historical_revision"
     assert revision["evidence_days"] == first["evidence_days"] == 1
@@ -224,9 +217,7 @@ def test_daily_uses_frozen_valid_data_and_records_metrics(db, tmp_path):
     for code in codes:
         insert(db, code, dates=dates)
     params = json.loads((ROOT / "params/params.json").read_text())
-    rec = research_daily(
-        db, {"cn": codes}, params, tmp_path / "research", asof="2026-10-26"
-    )
+    rec = research_daily(db, {"cn": codes}, params, tmp_path / "research", asof="2026-10-26")
     assert rec["status"] == "observed"
     assert rec["metrics"]["factors"]["score"]["rank_ic"]["n"] > 3
     assert rec["promotion_allowed"] is False
@@ -241,16 +232,14 @@ def test_invalid_ohlcv_is_not_silently_used(db, tmp_path):
     with sqlite3.connect(db) as conn:
         conn.execute("UPDATE kline SET high=0 WHERE date='2026-10-01'")
     params = json.loads((ROOT / "params/params.json").read_text())
-    rec = research_daily(
-        db, {"cn": ["000001"]}, params, tmp_path / "research", asof="2026-10-26"
-    )
+    rec = research_daily(db, {"cn": ["000001"]}, params, tmp_path / "research", asof="2026-10-26")
     assert rec["status"] == "data_blocked"
     assert rec["quality"]["invalid"] == ["cn:000001"]
     assert rec["promotion_allowed"] is False
 
 
 def test_tencent_current_endpoint_fallback_and_extended_amount(monkeypatch):
-    import fetcher
+    import quant_agent.infrastructure.market_data.fetcher as fetcher
 
     calls = []
 
@@ -294,15 +283,13 @@ def test_tencent_current_endpoint_fallback_and_extended_amount(monkeypatch):
 
 
 def test_tencent_legacy_numeric_amount_does_not_drop_bar(monkeypatch):
-    import fetcher
+    import quant_agent.infrastructure.market_data.fetcher as fetcher
 
     class Response:
         def json(self):
             return {
                 "data": {
-                    "sh600519": {
-                        "qfqday": [["2026-10-23", "10", "11", "12", "9", "100", 1234.0]]
-                    }
+                    "sh600519": {"qfqday": [["2026-10-23", "10", "11", "12", "9", "100", 1234.0]]}
                 }
             }
 
@@ -360,6 +347,7 @@ def test_query_cli_outputs_parseable_json_and_preserves_real_exit_code(db, tmp_p
 
 def test_offline_research_does_not_network(db, tmp_path, monkeypatch):
     import socket
+
     import requests
 
     def forbidden(*args, **kwargs):
@@ -369,15 +357,13 @@ def test_offline_research_does_not_network(db, tmp_path, monkeypatch):
     monkeypatch.setattr(requests.sessions.Session, "request", forbidden)
     insert(db)
     params = json.loads((ROOT / "params/params.json").read_text())
-    research_daily(
-        db, {"cn": ["000001"]}, params, tmp_path / "research", asof="2026-10-26"
-    )
+    research_daily(db, {"cn": ["000001"]}, params, tmp_path / "research", asof="2026-10-26")
 
 
 def test_sync_storage_failure_is_reported(db, monkeypatch):
-    import fetcher
-    import store
-    from research_cli import synchronize
+    import quant_agent.infrastructure.market_data.fetcher as fetcher
+    import quant_agent.infrastructure.persistence.store as store
+    from quant_agent.entrypoints.research import synchronize
 
     insert(db)
     frame = LocalData(db).get_data("cn", ["000001"])["000001"]
@@ -413,10 +399,8 @@ def test_snapshot_preserves_float_precision(db, tmp_path):
     assert restored[("cn", "000001", "qfq")].close.iloc[0] == 10.123456789012345
 
 
-def test_repeat_skips_evaluator_and_preserves_original_parameters(
-    db, tmp_path, monkeypatch
-):
-    import daily_research
+def test_repeat_skips_evaluator_and_preserves_original_parameters(db, tmp_path, monkeypatch):
+    import quant_agent.application.research.daily as daily_research
 
     insert(db)
     params = json.loads((ROOT / "params/params.json").read_text())
@@ -458,9 +442,7 @@ def test_daily_report_contains_symbol_data_from_completed_snapshot(db, tmp_path)
             "UPDATE kline SET open=999,close=999,high=1000,low=998 WHERE date='2026-10-26'"
         )
     params = json.loads((ROOT / "params/params.json").read_text())
-    rec = research_daily(
-        db, {"cn": ["000001"]}, params, tmp_path / "research", asof="2026-10-23"
-    )
+    rec = research_daily(db, {"cn": ["000001"]}, params, tmp_path / "research", asof="2026-10-23")
     observed = rec["observations"][0]
     source = LocalData(db).get_data("cn", ["000001"], end="2026-10-23")["000001"]
     assert observed["date"] == "2026-10-23"
@@ -543,9 +525,7 @@ def test_names_and_per_symbol_explanations_are_wired_to_daily_report(db, tmp_pat
     for factor in row["analysis"]["factors"]:
         assert factor["weight"] == params["weights"][factor["key"]]
         assert factor["points"] == row["factors"]["f_" + factor["key"]]
-        assert factor["contribution"] == pytest.approx(
-            factor["weight"] * factor["points"]
-        )
+        assert factor["contribution"] == pytest.approx(factor["weight"] * factor["points"])
         assert factor["basis"]
     total = sum(f["contribution"] for f in row["analysis"]["factors"])
     assert total == pytest.approx(row["score"], abs=0.11)
@@ -584,7 +564,7 @@ def test_name_revision_changes_record_without_inventing_new_trading_day(db, tmp_
 
 
 def test_interpretation_distinguishes_volume_rally_from_selloff():
-    from research_report import explain_observation
+    from quant_agent.infrastructure.reporting.research import explain_observation
 
     params = json.loads((ROOT / "params/params.json").read_text())
     row = {
@@ -646,7 +626,7 @@ def test_main_report_and_details_are_separate_and_cross_linked(db, tmp_path):
 
 
 def test_summary_priority_is_existing_score_rank_with_no_forced_candidates():
-    from research_report import build_research_summary
+    from quant_agent.infrastructure.reporting.research import build_research_summary
 
     observations = []
     for market in ("cn", "etf"):

@@ -55,11 +55,11 @@
 
 | 当前资产 | 可以复用 | 进入比赛前的具体缺口 |
 |---|---|---|
-| `src/data_snapshot.py`、`src/data_quality.py` | 校验、哈希、不可变输入的思想与适用纯函数 | 比赛文件含 xlsx、标签及样例提交，不是现有行情快照；需专用数据 manifest |
-| `src/temporal_validation.py` | 按日期分组、实际标签结束日清除跨界样本 | 需识别比赛的股票身份、交易日、预测时点与文件切分，不能套固定日历间隔 |
-| `src/research_experiments.py` | 登记、候选预算、失败留档、锁定后单次测试的设计 | 当前注册绑定行情快照；不能直接登记任意 Kaggle 表格，也未全局强制接管研究入口 |
-| `src/ml_eval.py` | Ridge、HistGradientBoosting 的现有实现思路及训练集预处理边界 | 当前是回归评估；涨跌分类需分类基线、Accuracy 与输出协议 |
-| `src/paper_*.py` | 投资账户与执行核算的独立边界 | Kaggle 不经此账本，比赛成绩不回写个人参数与账户 |
+| `src/quant_agent/infrastructure/persistence/snapshots.py`、`src/quant_agent/domain/market/quality.py` | 校验、哈希、不可变输入的思想与适用纯函数 | 比赛文件含 xlsx、标签及样例提交，不是现有行情快照；需专用数据 manifest |
+| `src/quant_agent/domain/research/validation.py` | 按日期分组、实际标签结束日清除跨界样本 | 需识别比赛的股票身份、交易日、预测时点与文件切分，不能套固定日历间隔 |
+| `src/quant_agent/application/research/experiments.py` | 登记、候选预算、失败留档、锁定后单次测试的设计 | 当前注册绑定行情快照；不能直接登记任意 Kaggle 表格，也未全局强制接管研究入口 |
+| `src/quant_agent/domain/research/ml_eval.py` | Ridge、HistGradientBoosting 的现有实现思路及训练集预处理边界 | 当前是回归评估；涨跌分类需分类基线、Accuracy 与输出协议 |
+| `src/quant_agent/application/paper/` | 投资账户与执行核算的独立边界 | Kaggle 不经此账本，比赛成绩不回写个人参数与账户 |
 | 六因子 | 形成可解释假设，按可用输入重建适配特征 | 数据未必有成交量，不能原样移植；每项特征需证明当时可见 |
 
 D1仅查源码与文档；D3已新增隔离竞赛模块，并运行新增竞赛、既有时间验证和研究实验测试共38例通过；未评价投资系统当前收益能力。README 与 10 月 27 日冷启动记录存在账户状态描述差异，本任务不据此判断当前账户是否运行，也不推进其结算。

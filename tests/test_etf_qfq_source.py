@@ -5,17 +5,15 @@
 
 import hashlib
 import json
-import sys
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-import fetcher  # noqa: E402
-from datasources import etf_qfq_source as source  # noqa: E402
-from datasources import base  # noqa: E402
+import quant_agent.infrastructure.market_data.fetcher as fetcher  # noqa: E402
+from quant_agent.infrastructure.market_data.datasources import base  # noqa: E402
+from quant_agent.infrastructure.market_data.datasources import (
+    etf_qfq_source as source,  # noqa: E402
+)
 
 
 def _factors(code="510300"):
@@ -197,9 +195,7 @@ def test_explicit_zero_turnover_is_distinct_from_a_missing_amount():
 def test_receipt_content_hash_is_bound_to_source(tmp_path, monkeypatch):
     raw, factors = _texts()
     monkeypatch.setattr(base, "CACHE_DIR", str(tmp_path))
-    monkeypatch.setattr(
-        source, "_GUARD", base.SourceGuard("fixture", min_gap=0, retries=1)
-    )
+    monkeypatch.setattr(source, "_GUARD", base.SourceGuard("fixture", min_gap=0, retries=1))
     monkeypatch.setattr(base.store, "record_health", lambda *_a, **_kw: None)
 
     def get(url, params=None, **kwargs):
@@ -211,9 +207,7 @@ def test_receipt_content_hash_is_bound_to_source(tmp_path, monkeypatch):
             )
         return SimpleNamespace(text=factors if url.endswith("qfq.js") else raw)
 
-    result = source.fetch_etf_qfq(
-        "510300", 2, get=get, receipt_dir=tmp_path / "receipts"
-    )
+    result = source.fetch_etf_qfq("510300", 2, get=get, receipt_dir=tmp_path / "receipts")
     assert len(result) == 3
     source_id = result.attrs["source"]
     digest = source_id.rsplit(":", 1)[1]
@@ -222,15 +216,11 @@ def test_receipt_content_hash_is_bound_to_source(tmp_path, monkeypatch):
     assert json.loads(payload)["factor_rows"] == _factors()["data"]
 
 
-def test_fetcher_uses_validated_sina_etf_only_after_tencent_qfq_is_missing(
-    tmp_path, monkeypatch
-):
+def test_fetcher_uses_validated_sina_etf_only_after_tencent_qfq_is_missing(tmp_path, monkeypatch):
     raw, factors = _texts()
     monkeypatch.setattr(base, "CACHE_DIR", str(tmp_path))
     monkeypatch.setattr(fetcher, "CACHE_DIR", str(tmp_path))
-    monkeypatch.setattr(
-        source, "_GUARD", base.SourceGuard("fixture", min_gap=0, retries=1)
-    )
+    monkeypatch.setattr(source, "_GUARD", base.SourceGuard("fixture", min_gap=0, retries=1))
     monkeypatch.setattr(base.store, "record_health", lambda *_a, **_kw: None)
     called = []
 
@@ -238,9 +228,7 @@ def test_fetcher_uses_validated_sina_etf_only_after_tencent_qfq_is_missing(
         called.append(url)
         if "sina" in url:
             return SimpleNamespace(text=factors if url.endswith("qfq.js") else raw)
-        return SimpleNamespace(
-            json=lambda: {"data": {"sh510300": {"day": _supplement()["day"]}}}
-        )
+        return SimpleNamespace(json=lambda: {"data": {"sh510300": {"day": _supplement()["day"]}}})
 
     monkeypatch.setattr(fetcher, "_get", get)
     frame = fetcher.fetch_kline("510300", "etf", limit=2, use_db=False)
@@ -255,9 +243,7 @@ def test_available_tencent_qfq_does_not_call_the_backup(monkeypatch):
     def get(url, params=None, **_):
         called.append(url)
         return SimpleNamespace(
-            json=lambda: {
-                "data": {"sh512880": {"qfqday": [["2026-10-26", 1, 1, 1, 1, 100]]}}
-            }
+            json=lambda: {"data": {"sh512880": {"qfqday": [["2026-10-26", 1, 1, 1, 1, 100]]}}}
         )
 
     monkeypatch.setattr(fetcher, "_get", get)
@@ -272,9 +258,7 @@ def test_bad_adjustment_never_publishes_a_receipt_and_does_not_block_other_etfs(
     raw, factors = _texts()
     broken = factors.replace('"s": "1"', '"s": "2"')
     monkeypatch.setattr(base, "CACHE_DIR", str(tmp_path))
-    monkeypatch.setattr(
-        source, "_GUARD", base.SourceGuard("fixture", min_gap=0, retries=1)
-    )
+    monkeypatch.setattr(source, "_GUARD", base.SourceGuard("fixture", min_gap=0, retries=1))
     monkeypatch.setattr(base.store, "record_health", lambda *_a, **_kw: None)
     current = [broken]
 
@@ -285,15 +269,11 @@ def test_bad_adjustment_never_publishes_a_receipt_and_does_not_block_other_etfs(
             )
         return SimpleNamespace(text=current[0] if url.endswith("qfq.js") else raw)
 
-    result = source.fetch_etf_qfq(
-        "510300", 2, get=get, receipt_dir=tmp_path / "receipts"
-    )
+    result = source.fetch_etf_qfq("510300", 2, get=get, receipt_dir=tmp_path / "receipts")
     assert result.empty
     assert not (tmp_path / "receipts").exists()
     current[0] = factors
-    assert not source.fetch_etf_qfq(
-        "510300", 2, get=get, receipt_dir=tmp_path / "receipts"
-    ).empty
+    assert not source.fetch_etf_qfq("510300", 2, get=get, receipt_dir=tmp_path / "receipts").empty
 
 
 def test_corrupt_existing_receipt_is_rejected_and_preserved(tmp_path):

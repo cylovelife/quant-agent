@@ -3,32 +3,37 @@
 @author cylovelife
 """
 
+import json
+import sqlite3
 from copy import deepcopy
 from dataclasses import asdict
 from datetime import datetime
-import json
 from pathlib import Path
-import sqlite3
-import sys
 
 import pytest
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
+from quant_agent.infrastructure.configuration import load_policy
 
-import execution  # noqa: E402
-import execution_cli  # noqa: E402
-import paper_experiment as experiment  # noqa: E402
-from paper_daily import settle_day  # noqa: E402
-from paper_ledger import LedgerConflict, LedgerCorruption, PaperLedger  # noqa: E402
+ROOT = Path(__file__).resolve().parents[1]
+
 from test_paper_daily import close, day, order_event  # noqa: E402
 from test_paper_experiment import NOW, ZONE, calendar, quote, spec  # noqa: E402
 from test_paper_ledger import inputs  # noqa: E402
 
+import quant_agent.application.paper.experiment as experiment  # noqa: E402
+import quant_agent.domain.trading.execution as execution  # noqa: E402
+import quant_agent.entrypoints.execution as execution_cli  # noqa: E402
+from quant_agent.application.paper.daily import settle_day  # noqa: E402
+from quant_agent.application.paper.ledger import (  # noqa: E402
+    LedgerConflict,
+    LedgerCorruption,
+    PaperLedger,
+)
+
 
 def _book(tmp_path):
     book = PaperLedger.create(tmp_path / "paper.db")
-    policy = execution.load_policy(ROOT / "params/execution_v1.json")
+    policy = load_policy(ROOT / "params/execution_v1.json")
     book.create_account("fixture", "50000.00", "2026-10-26", policy)
     return book
 
@@ -143,9 +148,7 @@ def _market(path, market, code, day, *, fetched="16:00:00"):
 
 def _refetch(path):
     with sqlite3.connect(path) as conn:
-        conn.execute(
-            "UPDATE kline SET fetched_at=replace(fetched_at,'16:00:00','17:00:00')"
-        )
+        conn.execute("UPDATE kline SET fetched_at=replace(fetched_at,'16:00:00','17:00:00')")
 
 
 def test_daily_cli_resumes_after_refetch_and_partial_multiday_failure(tmp_path, capsys):
@@ -210,7 +213,7 @@ def test_paired_cli_resumes_after_refetch_and_partial_multiday_failure(
             return current.astimezone(tz) if tz else current.replace(tzinfo=None)
 
     monkeypatch.setattr(experiment, "datetime", Clock)
-    policy = execution.load_policy(ROOT / "params/execution_v1.json")
+    policy = load_policy(ROOT / "params/execution_v1.json")
     experiment.start_experiment(tmp_path / "paper.db", spec(), policy, now=NOW)
     book = PaperLedger(tmp_path / "paper.db")
     market = tmp_path / "market.db"

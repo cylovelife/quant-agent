@@ -11,7 +11,6 @@ import sqlite3
 from decimal import Decimal
 
 import pytest
-
 from test_paper_ledger import inputs
 from test_paper_ledger import ledger as ledger
 from test_paper_ledger import modules as modules
@@ -45,16 +44,12 @@ def test_dividend_entitlement_survives_sale_and_is_paid_once(modules, ledger):
     received = ledger.apply_action("fixture", declaration)
     assert received["quantity_basis"] == 100 and received["receivable_delta"] == "0.00"
     assert ledger.snapshot("fixture")["dividend_receivable"] == "0.00"
-    accrual = action(
-        "dividend_accrual", "accrue-1", "2026-10-28", entitlement_id="div-1"
-    )
+    accrual = action("dividend_accrual", "accrue-1", "2026-10-28", entitlement_id="div-1")
     assert ledger.apply_action("fixture", accrual)["receivable_delta"] == "10.00"
     assert ledger.snapshot("fixture")["dividend_receivable"] == "10.00"
     ledger.execute(
         "fixture",
-        *inputs(
-            execution, "sell", side="sell", signal="2026-10-27", session="2026-10-28"
-        ),
+        *inputs(execution, "sell", side="sell", signal="2026-10-27", session="2026-10-28"),
     )
     payment = action("dividend_payment", "pay-1", "2026-10-29", accrual_id="accrue-1")
     first = ledger.apply_action("fixture", payment)
@@ -117,9 +112,7 @@ def test_fractional_split_is_not_rounded_into_invented_shares(modules, ledger):
 def test_external_cash_flows_are_separate_and_cannot_overdraw(modules, ledger):
     module = modules[1]
     deposit = action("deposit", "in-1", "2026-10-27", amount="100.00")
-    withdraw = action(
-        "withdrawal", "out-1", "2026-10-27", phase="close", amount="25.00"
-    )
+    withdraw = action("withdrawal", "out-1", "2026-10-27", phase="close", amount="25.00")
     ledger.apply_action("fixture", deposit)
     ledger.apply_action("fixture", withdraw)
     snap = ledger.snapshot("fixture")
@@ -158,9 +151,7 @@ def test_action_identity_temporal_guards_and_transaction_rollback(modules, ledge
     with pytest.raises(module.LedgerConflict):
         ledger.apply_action("fixture", {**split, "numerator": 3})
     with pytest.raises(module.LedgerConflict):
-        ledger.apply_action(
-            "fixture", action("deposit", "past", "2026-10-27", amount="1.00")
-        )
+        ledger.apply_action("fixture", action("deposit", "past", "2026-10-27", amount="1.00"))
     with pytest.raises(module.LedgerConflict):
         ledger.apply_action(
             "fixture",
@@ -175,7 +166,7 @@ def test_action_identity_temporal_guards_and_transaction_rollback(modules, ledge
 
 
 def test_unknown_actions_never_become_total_return():
-    from value_track import price_change_observation
+    from quant_agent.application.research.value_tracking import price_change_observation
 
     result = price_change_observation("10", "9")
     assert result["price_return"] == pytest.approx(-0.1)
@@ -185,10 +176,8 @@ def test_unknown_actions_never_become_total_return():
     )
 
 
-def test_v1_ledger_can_be_upgraded_only_to_new_copy(
-    modules, policy, tmp_path, monkeypatch
-):
-    import store
+def test_v1_ledger_can_be_upgraded_only_to_new_copy(modules, policy, tmp_path, monkeypatch):
+    import quant_agent.infrastructure.persistence.store as store
 
     execution, module = modules
     monkeypatch.setattr(store, "PAPER_SCHEMA_VERSION", 1)
@@ -205,9 +194,7 @@ def test_v1_ledger_can_be_upgraded_only_to_new_copy(
         module.migrate_ledger_copy(old.path, migrated.path)
     with pytest.raises(ValueError):
         old.execute("fixture", *inputs(execution, "new"))
-    migrated.apply_action(
-        "fixture", action("deposit", "in", "2026-10-28", amount="10.00")
-    )
+    migrated.apply_action("fixture", action("deposit", "in", "2026-10-28", amount="10.00"))
     assert migrated.snapshot("fixture")["cash"] == "49003.99"
 
 
@@ -257,7 +244,7 @@ def test_entitlement_cannot_be_accrued_twice(modules, ledger):
 def test_copy_migration_failure_removes_candidate_and_preserves_source(
     modules, policy, tmp_path, monkeypatch
 ):
-    import store
+    import quant_agent.infrastructure.persistence.store as store
 
     execution, module = modules
     monkeypatch.setattr(store, "PAPER_SCHEMA_VERSION", 1)
@@ -287,14 +274,10 @@ def test_action_cli_books_only_declared_temporary_ledger(modules, ledger, tmp_pa
     file = tmp_path / "action.json"
     file.write_text(json.dumps(request))
     command = [sys.executable, str(root / "run.py"), "--record-action", str(file)]
-    first = subprocess.run(
-        command, cwd=tmp_path, text=True, capture_output=True, timeout=20
-    )
+    first = subprocess.run(command, cwd=tmp_path, text=True, capture_output=True, timeout=20)
     assert first.returncode == 0, first.stderr
     assert json.loads(first.stdout)["cash_after"] == "50030.00"
-    again = subprocess.run(
-        command, cwd=tmp_path, text=True, capture_output=True, timeout=20
-    )
+    again = subprocess.run(command, cwd=tmp_path, text=True, capture_output=True, timeout=20)
     assert again.returncode == 0 and json.loads(again.stdout)["replayed"]
     assert ledger.snapshot("fixture")["cash"] == "50030.00"
     assert not (tmp_path / "state").exists() and not (tmp_path / "logs").exists()
@@ -302,9 +285,7 @@ def test_action_cli_books_only_declared_temporary_ledger(modules, ledger, tmp_pa
 
 def test_preopen_cash_flow_is_listed_before_same_day_order(modules, ledger):
     execution, _ = modules
-    ledger.apply_action(
-        "fixture", action("deposit", "early", "2026-10-27", amount="5.00")
-    )
+    ledger.apply_action("fixture", action("deposit", "early", "2026-10-27", amount="5.00"))
     ledger.execute("fixture", *inputs(execution))
     events = ledger.events("fixture")
     assert [item["kind"] for item in events][:3] == [
@@ -319,13 +300,11 @@ def test_store_script_initializes_only_its_explicit_test_market_db(tmp_path):
     import os
     import subprocess
     import sys
-    from pathlib import Path
 
-    root = Path(__file__).resolve().parents[1]
     market = tmp_path / "market.db"
     env = {**os.environ, "QUANT_DB": str(market), "QUANT_STORE": "sqlite"}
     run = subprocess.run(
-        [sys.executable, str(root / "src/store.py")],
+        [sys.executable, "-m", "quant_agent.infrastructure.persistence.store"],
         cwd=tmp_path,
         env=env,
         text=True,
@@ -339,10 +318,8 @@ def test_store_script_initializes_only_its_explicit_test_market_db(tmp_path):
         ).fetchone()
 
 
-def test_corrupted_action_is_reported_as_corruption_not_a_valid_account(
-    modules, ledger
-):
-    from execution import _identity
+def test_corrupted_action_is_reported_as_corruption_not_a_valid_account(modules, ledger):
+    from quant_agent.domain.trading.execution import _identity
 
     module = modules[1]
     bad = action("deposit", "bad-record", "2026-10-27", amount="1.00", source="")

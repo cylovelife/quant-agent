@@ -7,13 +7,13 @@
 
 ## 文件与调用边界
 
-- `src/paper_ledger.py`：`PaperLedger`提供账户底座、订单记账、查询对账、待核验订单取消和旧账本副本预检。
-- `src/store.py`：`create_paper_store`独占新建空库，`paper_connection`提供独立严格事务。
+- `src/quant_agent/application/paper/ledger.py`：`PaperLedger`提供账户底座、订单记账、查询对账、待核验订单取消和旧账本副本预检。
+- `src/quant_agent/infrastructure/persistence/store.py`：`create_paper_store`独占新建空库，`paper_connection`提供独立严格事务。
   新库以应用标识`QPL1`和结构版本1识别，不能作为行情缓存打开，也不能从行情库自动迁移。
-- `src/portfolio.py::record_paper_order`：统一记账入口，调用账本持有的资金和数量。
+- `src/quant_agent/application/investing/portfolio.py::record_paper_order`：统一记账入口，调用账本持有的资金和数量。
   原`positions.json`、v2价格标签及其结算行为保持独立。
-- `src/execution.py`：继续复用任务4的成交模型；成本定义随账户完整保存，后续修改外部成本文件不会改变该账户的费率。
-- `src/execution_cli.py`和`run.py`：显式记账与只读查询在普通跑盘导入、配置和日志初始化前分流。
+- `src/quant_agent/domain/trading/execution.py`：继续复用任务4的成交模型；成本定义随账户完整保存，后续修改外部成本文件不会改变该账户的费率。
+- `src/quant_agent/entrypoints/execution.py`和`run.py`：显式记账与只读查询在普通跑盘导入、配置和日志初始化前分流。
   普通跑盘仍维护研究记录，不自动向新现金账本发单。
 
 这里是个人本地SQLite，不使用公司数据库平台。行情缓存原有的吞错、文件回退和`QUANT_STORE`关闭机制不作用于现金账本。

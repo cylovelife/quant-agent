@@ -1,6 +1,6 @@
 # 信号成交与收益标签契约
 
-任务2，2026-10-26。语义真理源为 [trade_semantics.py](../../src/trade_semantics.py)。
+任务2，2026-10-26。语义真理源为 [trade_semantics.py](../../src/quant_agent/domain/trading/labels.py)。
 新合约版本为 `next_open_close_v1`；本步只统一未扣费的日线价格模拟，不代表真实成交或完整组合绩效。
 后续验收以[给定本金的虚拟投资账户](paper_account_validation.md)为主线：日线标签是基础，
 不以真实账户成交作为验证前提；账户现金、数量、费用和每日净值由后续任务3–7补齐。
@@ -32,9 +32,9 @@
 
 ## 固定标签与策略标签
 
-[factor_eval.py](../../src/factor_eval.py) 的 `forward_return` 和默认 `build_panel` 继续计算不含止盈止损的固定持有期标签。
+[factor_eval.py](../../src/quant_agent/domain/research/factors.py) 的 `forward_return` 和默认 `build_panel` 继续计算不含止盈止损的固定持有期标签。
 `build_panel(..., label_spec=params["backtest"])` 显式请求策略标签，与
-[backtest.py](../../src/backtest.py)、[evaluate.py](../../src/evaluate.py)、[portfolio.py](../../src/portfolio.py)
+[backtest.py](../../src/quant_agent/application/research/backtest.py)、[evaluate.py](../../src/quant_agent/application/investing/evaluation.py)、[portfolio.py](../../src/quant_agent/application/investing/portfolio.py)
 使用同一解析器。面板增加实际入场日期、标签终点、版本及指纹，为后续日期切分提供依据。
 不能把固定持有期IC和含提前离场的收益说成同一实验。
 

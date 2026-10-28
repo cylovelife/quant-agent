@@ -27,13 +27,14 @@
    （否则用户会把「没取到数据」误读成「今天没有符合条件的标的」）；
    健康市场不得误报。
 """
+
 import argparse
 import json
 import os
 import pickle
 import shutil
-import sys
 import subprocess
+import sys
 import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -53,13 +54,17 @@ def synthetic_kline_map() -> dict:
         for number in range(6):
             rng = np.random.default_rng(100 + number)
             t = np.arange(300)
-            close = 100 + 4 * np.sin(t / 5 + number) + t * .01 + rng.normal(0, .3, len(t))
-            result[(market, f"{number + 1:06d}")] = pd.DataFrame({
-                "date": pd.bdate_range(end="2026-09-18", periods=len(t)),
-                "open": close * (1 + rng.normal(0, .002, len(t))),
-                "close": close, "high": close * 1.01, "low": close * .99,
-                "volume": rng.lognormal(15, .2, len(t)),
-            })
+            close = 100 + 4 * np.sin(t / 5 + number) + t * 0.01 + rng.normal(0, 0.3, len(t))
+            result[(market, f"{number + 1:06d}")] = pd.DataFrame(
+                {
+                    "date": pd.bdate_range(end="2026-09-18", periods=len(t)),
+                    "open": close * (1 + rng.normal(0, 0.002, len(t))),
+                    "close": close,
+                    "high": close * 1.01,
+                    "low": close * 0.99,
+                    "volume": rng.lognormal(15, 0.2, len(t)),
+                }
+            )
     return result
 
 
@@ -71,7 +76,9 @@ def build_kline_map(refresh: bool = False) -> dict:
             print(f"[cache] 复用 K 线缓存 {CACHE}（{len(kmap)} 只）")
             return kmap
     import glob
-    import fetcher
+
+    import quant_agent.infrastructure.market_data.fetcher as fetcher
+
     files = sorted(glob.glob(os.path.join(ROOT, "state", "picks_*.json")))
     if not files:
         raise SystemExit("state/ 下没有 picks_*.json，先跑一次 run.py")
@@ -114,10 +121,14 @@ def main():
 
     import pandas as pd  # noqa: F401  (确保依赖可用)
 
-    import portfolio
-    import report as rpt
-    from exit_model import (NEG_T_WEAK, exit_advice, fit_exit_model,
-                            parameter_scan)
+    import quant_agent.application.investing.portfolio as portfolio
+    import quant_agent.infrastructure.reporting.investment as rpt
+    from quant_agent.domain.research.exit_model import (
+        NEG_T_WEAK,
+        exit_advice,
+        fit_exit_model,
+        parameter_scan,
+    )
 
     shutil.rmtree(TMP, ignore_errors=True)
     os.makedirs(TMP, exist_ok=True)
@@ -141,10 +152,17 @@ def main():
     def cached_kline(code, market, mkt_id=None):
         return kmap.get((market, str(code)))
 
-    st = (portfolio.backfill_from_picks(book, pf, cached_kline, params, today, cal,
-                                        max_per_market=cap) if pf else {"opened": 0, "closed": 0, "skipped": 0})
-    print(f"[1] 回填 {os.path.basename(pf) if pf else '无v2留档'}: 开仓 {st['opened']} / 已平 {st['closed']} "
-          f"/ 跳过 {st['skipped']}")
+    st = (
+        portfolio.backfill_from_picks(
+            book, pf, cached_kline, params, today, cal, max_per_market=cap
+        )
+        if pf
+        else {"opened": 0, "closed": 0, "skipped": 0}
+    )
+    print(
+        f"[1] 回填 {os.path.basename(pf) if pf else '无v2留档'}: 开仓 {st['opened']} / 已平 {st['closed']} "
+        f"/ 跳过 {st['skipped']}"
+    )
     held = portfolio.open_positions(book)
     per_mkt = {}
     for p in held:
@@ -153,17 +171,28 @@ def main():
     if any(v > cap for v in per_mkt.values()):
         fails.append(f"回填超过每市场上限 {cap}: {per_mkt}")
 
-    quotes = {(p["market"], str(p["code"])): {"price": float(kmap[(p["market"], str(p["code"]))].iloc[-1]["close"]),
-                                             "pct": 0.0,
-                                             "date": str(kmap[(p["market"], str(p["code"]))].iloc[-1]["date"])[:10]}
-              for p in held if (p["market"], str(p["code"])) in kmap}
+    quotes = {
+        (p["market"], str(p["code"])): {
+            "price": float(kmap[(p["market"], str(p["code"]))].iloc[-1]["close"]),
+            "pct": 0.0,
+            "date": str(kmap[(p["market"], str(p["code"]))].iloc[-1]["date"])[:10],
+        }
+        for p in held
+        if (p["market"], str(p["code"])) in kmap
+    }
     closed = portfolio.settle_book(book, quotes, cal, params, today, kline_fn=cached_kline)
     print(f"    结算：行情命中 {len(quotes)}/{len(held)}，平仓 {len(closed)} 只")
 
     pbm = {}
     for (market, code), frame in kmap.items():
-        pbm.setdefault(market, []).append({"code": str(code), "name": str(code),
-                                          "score": 70, "price": float(frame.close.iloc[-1])})
+        pbm.setdefault(market, []).append(
+            {
+                "code": str(code),
+                "name": str(code),
+                "score": 70,
+                "price": float(frame.close.iloc[-1]),
+            }
+        )
     added1 = portfolio.add_positions(book, pbm, params, today, cap)
     added2 = portfolio.add_positions(book, pbm, params, today, cap)
     print(f"[2] 登记待入场信号 {len(added1)} 条；重复登记 {len(added2)} 条（期望 0）")
@@ -177,35 +206,56 @@ def main():
 
     # ---- 2) 离场模型 + 卖出建议 ----
     dates = sorted({str(x)[:10] for frame in kmap.values() for x in frame["date"]})
-    bounds = {"validation_start": dates[int(len(dates)*0.55)], "test_start": dates[int(len(dates)*0.8)], "test_end": dates[-1]}
+    bounds = {
+        "validation_start": dates[int(len(dates) * 0.55)],
+        "test_start": dates[int(len(dates) * 0.8)],
+        "test_end": dates[-1],
+    }
     model = fit_exit_model(kmap, params, boundaries=bounds)
     val = model["validation"]
-    print(f"[3] 离场模型 {model['n_symbols']}只/{model['n_trades']}笔，状态桶 "
-          f"{len(model['states'])}，τ*={val['tau'] * 100:+.1f}%，t_min*={val['t_min']}")
-    print(f"    OOS 基线 均{val['oos']['baseline']['avg_ret'] * 100:+.3f}% / "
-          f"模型 均{val['oos']['model']['avg_ret'] * 100:+.3f}% "
-          f"(提前离场 {val['oos']['model']['early_exit_ratio'] * 100:.0f}%)")
+    print(
+        f"[3] 离场模型 {model['n_symbols']}只/{model['n_trades']}笔，状态桶 "
+        f"{len(model['states'])}，τ*={val['tau'] * 100:+.1f}%，t_min*={val['t_min']}"
+    )
+    print(
+        f"    OOS 基线 均{val['oos']['baseline']['avg_ret'] * 100:+.3f}% / "
+        f"模型 均{val['oos']['model']['avg_ret'] * 100:+.3f}% "
+        f"(提前离场 {val['oos']['model']['early_exit_ratio'] * 100:.0f}%)"
+    )
 
     advice = exit_advice(portfolio.open_positions(book), model, params)
     from collections import Counter
+
     dist = Counter(a["advice"] for a in advice)
     print(f"[4] 卖出建议 {dict(dist)}")
     for a in advice:
-        if a["advice"] == "SELL" and a.get("expect_t") is not None \
-                and a["expect_t"] > NEG_T_WEAK:
+        if a["advice"] == "SELL" and a.get("expect_t") is not None and a["expect_t"] > NEG_T_WEAK:
             fails.append(f"噪声级负期望被判卖出: {a['code']} t={a['expect_t']}")
 
     # ---- 3) 参数体检 ----
     scan = parameter_scan(kmap, params)
-    print(f"[5] 规则体检 {scan['n_signals']} 笔；止损档 "
-          f"{[(it['stop'], round(it['sharpe'], 3)) for it in scan['by_stop']]}")
+    print(
+        f"[5] 规则体检 {scan['n_signals']} 笔；止损档 "
+        f"{[(it['stop'], round(it['sharpe'], 3)) for it in scan['by_stop']]}"
+    )
 
     # ---- 4) 报告 ----
     md_path, html_path = rpt.generate_report(
-        {}, {}, {}, {}, params, None, None, None,
-        exit_advice_list=advice, exit_model=model, book=book, param_scan=scan)
+        {},
+        {},
+        {},
+        {},
+        params,
+        None,
+        None,
+        None,
+        exit_advice_list=advice,
+        exit_model=model,
+        book=book,
+        param_scan=scan,
+    )
     txt = open(md_path, encoding="utf-8").read()
-    heads = [l for l in txt.split("\n") if l.startswith("## ")]
+    heads = [line for line in txt.split("\n") if line.startswith("## ")]
     print(f"[6] 报告 {len(txt)} 字符，章节 {len(heads)} 个: {heads}")
     for want in ("五、卖出建议", "六、持仓账本", "七、离场模型"):
         if not any(want in h for h in heads):
@@ -219,33 +269,71 @@ def main():
 
     # ---- 5) 结论分支回归：避免「未跑赢基线」与正增益数字自相矛盾 ----
     def _v(avg_model, win_model, p05_model, exit_ratio):
-        base = {"n": 100, "avg_ret": 0.0, "median_ret": 0.0, "win_rate": 0.45,
-                "p05": -0.09, "worst": -0.2, "avg_days": 5.0, "early_exit_ratio": 0.0}
-        mod = dict(base, avg_ret=avg_model, win_rate=win_model, p05=p05_model,
-                   avg_days=4.4, early_exit_ratio=exit_ratio)
-        return {"horizon": 5, "cut_date": "2026-06-01", "score_edges": [69, 75],
-                "tau": 0.0, "t_min": -1.2, "tau_scan": [],
-                "is": {"baseline": base, "model": mod},
-                "oos": {"baseline": base, "model": mod, "model_loose": mod},
-                "lift": {"avg_ret": avg_model, "win_rate": win_model - 0.45,
-                         "p05": p05_model + 0.09, "max_dd": 0.0}}
+        base = {
+            "n": 100,
+            "avg_ret": 0.0,
+            "median_ret": 0.0,
+            "win_rate": 0.45,
+            "p05": -0.09,
+            "worst": -0.2,
+            "avg_days": 5.0,
+            "early_exit_ratio": 0.0,
+        }
+        mod = dict(
+            base,
+            avg_ret=avg_model,
+            win_rate=win_model,
+            p05=p05_model,
+            avg_days=4.4,
+            early_exit_ratio=exit_ratio,
+        )
+        return {
+            "horizon": 5,
+            "cut_date": "2026-06-01",
+            "score_edges": [69, 75],
+            "tau": 0.0,
+            "t_min": -1.2,
+            "tau_scan": [],
+            "is": {"baseline": base, "model": mod},
+            "oos": {"baseline": base, "model": mod, "model_loose": mod},
+            "lift": {
+                "avg_ret": avg_model,
+                "win_rate": win_model - 0.45,
+                "p05": p05_model + 0.09,
+                "max_dd": 0.0,
+            },
+        }
 
     cases = [
         # (名称, validation, 必须出现的措辞, 禁止出现的措辞)
-        ("收益正但胜率降、回撤变差", _v(0.0012, 0.418, -0.1150, 0.21),
-         "未能取得一致改善", "未跑赢基线"),
-        ("收益负但回撤改善", _v(-0.0003, 0.464, -0.0773, 0.57),
-         "收益未跑赢基线", None),
+        (
+            "收益正但胜率降、回撤变差",
+            _v(0.0012, 0.418, -0.1150, 0.21),
+            "未能取得一致改善",
+            "未跑赢基线",
+        ),
+        ("收益负但回撤改善", _v(-0.0003, 0.464, -0.0773, 0.57), "收益未跑赢基线", None),
         ("模型未触发", _v(0.0, 0.45, -0.09, 0.0), "一次都没触发", None),
     ]
     for name, vm, must_have, forbid in cases:
-        block = rpt.exit_model_md({"horizon": vm["horizon"], "min_bucket_n": 20,
-                                   "shrink_k": 25.0, "score_edges": vm["score_edges"],
-                                   "tau": vm["tau"], "t_min": vm["t_min"],
-                                   "states": {"x": {}}, "coarse": {}, "global_v": 0.0,
-                                   "n_obs": 1, "n_trades": 1, "n_symbols": 1,
-                                   "date_range": ["2025-01-01", "2026-01-01"],
-                                   "validation": vm})
+        block = rpt.exit_model_md(
+            {
+                "horizon": vm["horizon"],
+                "min_bucket_n": 20,
+                "shrink_k": 25.0,
+                "score_edges": vm["score_edges"],
+                "tau": vm["tau"],
+                "t_min": vm["t_min"],
+                "states": {"x": {}},
+                "coarse": {},
+                "global_v": 0.0,
+                "n_obs": 1,
+                "n_trades": 1,
+                "n_symbols": 1,
+                "date_range": ["2025-01-01", "2026-01-01"],
+                "validation": vm,
+            }
+        )
         ok = must_have in block
         bad = forbid is not None and forbid in block
         print(f"[7] 结论分支「{name}」: {'OK' if ok and not bad else 'FAIL'}")
@@ -255,17 +343,25 @@ def main():
             fails.append(f"结论分支「{name}」出现矛盾的措辞：{forbid}")
 
     # ---- 6–8) Versioned signal/fill/label regressions use constructed daily bars. ----
-    import evaluate as ev
-    from trade_semantics import LABEL_VERSION, LabelSpec
+    import quant_agent.application.investing.evaluation as ev
+    from quant_agent.domain.trading.labels import LABEL_VERSION, LabelSpec
 
-    result = subprocess.run([sys.executable, "-m", "pytest", "-q",
-                             os.path.join(ROOT, "tests", "test_trade_semantics.py"),
-                             os.path.join(ROOT, "tests", "test_data_contract.py"),
-                             os.path.join(ROOT, "tests", "test_execution.py"),
-                             os.path.join(ROOT, "tests", "test_paper_ledger.py"),
-                             os.path.join(ROOT, "tests", "test_corporate_actions.py"),
-                             os.path.join(ROOT, "tests", "test_temporal_validation.py")],
-                            cwd=ROOT, check=False)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            os.path.join(ROOT, "tests", "test_trade_semantics.py"),
+            os.path.join(ROOT, "tests", "test_data_contract.py"),
+            os.path.join(ROOT, "tests", "test_execution.py"),
+            os.path.join(ROOT, "tests", "test_paper_ledger.py"),
+            os.path.join(ROOT, "tests", "test_corporate_actions.py"),
+            os.path.join(ROOT, "tests", "test_temporal_validation.py"),
+        ],
+        cwd=ROOT,
+        check=False,
+    )
     if result.returncode:
         fails.append("跨模块交易语义／数据契约／订单模拟／事件账本／公司行动／时间切分回归失败")
 
@@ -278,23 +374,54 @@ def main():
     grows = []
     for di, dstr in enumerate(["2026-09-17", "2026-09-18"]):
         for i in range(20):
-            grows.append({"date": dstr, "code": f"G{di}{i:03d}", "market": "cn",
-                          "score": 60, "f_boll": 20 + i * 1.5, "f_rsi": 50.0,
-                          "f_volume": 30.0, "f_trend": 40.0, "f_macd": 25.0,
-                          "f_drawdown": 15.0,
-                          "ret": (i - 10) / 500.0 + (0.02 if di == 0 else -0.02)})
+            grows.append(
+                {
+                    "date": dstr,
+                    "code": f"G{di}{i:03d}",
+                    "market": "cn",
+                    "score": 60,
+                    "f_boll": 20 + i * 1.5,
+                    "f_rsi": 50.0,
+                    "f_volume": 30.0,
+                    "f_trend": 40.0,
+                    "f_macd": 25.0,
+                    "f_drawdown": 15.0,
+                    "ret": (i - 10) / 500.0 + (0.02 if di == 0 else -0.02),
+                }
+            )
     # 再塞一个退化日：全天 ret 恒为 0（实测 2026-09-11 就是这种）
-    grows += [{"date": "2026-09-19", "code": f"Z{i:03d}", "market": "cn", "score": 60,
-               "f_boll": 40.0, "f_rsi": 50.0, "f_volume": 30.0, "f_trend": 40.0,
-               "f_macd": 25.0, "f_drawdown": 15.0, "ret": 0.0} for i in range(20)]
+    grows += [
+        {
+            "date": "2026-09-19",
+            "code": f"Z{i:03d}",
+            "market": "cn",
+            "score": 60,
+            "f_boll": 40.0,
+            "f_rsi": 50.0,
+            "f_volume": 30.0,
+            "f_trend": 40.0,
+            "f_macd": 25.0,
+            "f_drawdown": 15.0,
+            "ret": 0.0,
+        }
+        for i in range(20)
+    ]
     gpath = os.path.join(gtmp, "outcomes_v2.csv")
     for row in grows:
         row.update(label_version=LABEL_VERSION, label_id=LabelSpec().label_id)
     pd.DataFrame(grows).to_csv(gpath, index=False)
 
-    gparams = {"weights": {"boll": .25, "rsi": .25, "volume": .15,
-                           "trend": .1, "macd": .15, "drawdown": .1},
-               "iteration": {}}
+    gparams = {
+        "weights": {
+            "boll": 0.25,
+            "rsi": 0.25,
+            "volume": 0.15,
+            "trend": 0.1,
+            "macd": 0.15,
+            "drawdown": 0.1,
+        },
+        "iteration": {},
+    }
     rg = ev.update_weights(gparams, min_samples=20, lr=0.25, min_days=20)
     print(f"[11] 交易日门槛：updated={rg['updated']} / {rg.get('reason')}")
     if rg["updated"]:
@@ -303,8 +430,10 @@ def main():
         fails.append(f"门槛理由不明确：{rg.get('reason')}")
 
     clean, qinfo = ev._drop_degenerate(pd.read_csv(gpath))
-    print(f"[11] 退化日剔除：识别 {qinfo.get('degenerate_days')}，样本 "
-          f"{len(grows)} → {len(clean)}（期望 ['2026-09-19'] / 40）")
+    print(
+        f"[11] 退化日剔除：识别 {qinfo.get('degenerate_days')}，样本 "
+        f"{len(grows)} → {len(clean)}（期望 ['2026-09-19'] / 40）"
+    )
     if qinfo.get("degenerate_days") != ["2026-09-19"] or len(clean) != 40:
         fails.append(f"退化日未被正确剔除：{qinfo.get('degenerate_days')} / {len(clean)}")
 
@@ -318,61 +447,83 @@ def main():
     # 网格里持有期不同（3/5/8 日）。用原始平均收益比较，等于把「敞口更大」当成
     # 「策略更优」：持有 8 日的组合多吃 3 天漂移，原始均值必然更高。
     import numpy as np
-    import model_select as msel
+
+    import quant_agent.application.research.model_selection as msel
 
     rng = np.random.RandomState(7)
-    sigs = [("2026-01-%02d" % (k % 28 + 1), 10.0,
-             10.0 * np.cumprod(1 + rng.normal(0.004, 0.010, 8)))
-            for k in range(300)]
+    sigs = [
+        ("2026-01-%02d" % (k % 28 + 1), 10.0, 10.0 * np.cumprod(1 + rng.normal(0.004, 0.010, 8)))
+        for k in range(300)
+    ]
     s5 = msel._rule_stats(sigs, 5, None, None)
     s8 = msel._rule_stats(sigs, 8, None, None)
-    print(f"[12] 日均折算：持有5日 avg={s5['avg'] * 100:+.3f}% / "
-          f"日均={s5['avg_per_day'] * 100:+.4f}% | 持有8日 "
-          f"avg={s8['avg'] * 100:+.3f}% / 日均={s8['avg_per_day'] * 100:+.4f}%")
+    print(
+        f"[12] 日均折算：持有5日 avg={s5['avg'] * 100:+.3f}% / "
+        f"日均={s5['avg_per_day'] * 100:+.4f}% | 持有8日 "
+        f"avg={s8['avg'] * 100:+.3f}% / 日均={s8['avg_per_day'] * 100:+.4f}%"
+    )
     if s8["avg"] <= s5["avg"]:
         fails.append("样本构造有误：持有更久却未取得更高原始均值")
     if abs(s8["avg_per_day"] - s5["avg_per_day"]) > 0.001:
-        fails.append(f"日均折算未消除持有期差异：{s5['avg_per_day']} vs "
-                     f"{s8['avg_per_day']}")
+        fails.append(f"日均折算未消除持有期差异：{s5['avg_per_day']} vs {s8['avg_per_day']}")
     if s5.get("avg_days") != 5.0 or s8.get("avg_days") != 8.0:
         fails.append(f"实际持有日数不对：{s5.get('avg_days')} / {s8.get('avg_days')}")
 
     # (a2) 口径必须锁定「总收益 / 总持有日数」，不能退化成「平均比率」——
     # 后者被 1 日就被止损打掉的样本主导（−5% 的 1 日止损贡献 −500%/日），
     # 会把带止损的规则算得极度难看。用带止损的信号集来区分两种口径。
-    import exit_model as em
+    import quant_agent.domain.research.exit_model as em
+
     rets, days = em._simulate_rule(sigs, 8, -0.03, None, return_days=True)
     proper = float(rets.mean()) / float(days.mean())
     naive = float(np.mean(rets / np.maximum(days, 1.0)))
     s_stop = msel._rule_stats(sigs, 8, -0.03, None)
-    print(f"[12] 口径锁定（含止损，最短持有 {int(days.min())} 日）："
-          f"实现={s_stop['avg_per_day'] * 100:+.4f}% | "
-          f"总收益/总日数={proper * 100:+.4f}% | 平均比率={naive * 100:+.4f}%")
+    print(
+        f"[12] 口径锁定（含止损，最短持有 {int(days.min())} 日）："
+        f"实现={s_stop['avg_per_day'] * 100:+.4f}% | "
+        f"总收益/总日数={proper * 100:+.4f}% | 平均比率={naive * 100:+.4f}%"
+    )
     # 容差取 1e-12 而非 1e-6：1e-6 会放过 round(...,5) 这种四舍五入。
     # 日收益量级只有 1e-3，round(...,5) 会把决策量压成 0.0038（两位有效数字），
     # 而候选方案之间的日均差异常在 1e-4~1e-5——四舍五入正好把真实差异抹平，
     # 选型就退化成靠舍入噪声挑参数。该断言同时守住「口径正确」与「精度够用」。
     if abs(s_stop["avg_per_day"] - proper) > 1e-12:
-        fails.append(f"日均口径未用「总收益/总日数」或精度被舍入："
-                     f"{s_stop['avg_per_day']!r} vs {proper!r}")
+        fails.append(
+            f"日均口径未用「总收益/总日数」或精度被舍入：{s_stop['avg_per_day']!r} vs {proper!r}"
+        )
     if abs(proper - naive) < 1e-6:
         fails.append("样本无法区分两种日均口径，该断言失去意义")
     if int(days.min()) >= 8:
         fails.append(f"止损未生效（最短持有 {int(days.min())} 日），无法检验口径差异")
 
     # 尾部守卫：建议参数靠加深 5% 分位换日均收益 → 必须维持现配置
-    rec = {"hold_days": 8, "stop_loss": None, "take_profit": None, "avg": 0.0064,
-           "avg_per_day": 0.00080, "avg_days": 8.0, "p05": -0.1052}
-    curf = {"hold_days": 5, "stop_loss": -0.05, "take_profit": 0.08, "avg": 0.0025,
-            "avg_per_day": 0.00050, "avg_days": 5.0, "p05": -0.0721}
+    rec = {
+        "hold_days": 8,
+        "stop_loss": None,
+        "take_profit": None,
+        "avg": 0.0064,
+        "avg_per_day": 0.00080,
+        "avg_days": 8.0,
+        "p05": -0.1052,
+    }
+    curf = {
+        "hold_days": 5,
+        "stop_loss": -0.05,
+        "take_profit": 0.08,
+        "avg": 0.0025,
+        "avg_per_day": 0.00050,
+        "avg_days": 5.0,
+        "p05": -0.0721,
+    }
     v1, sw1 = msel._short_verdict([{"n_oos": 100}], 0.0003, 0.0003, 0.0, rec, curf)
     print(f"[12] 尾部守卫（5%分位恶化 3.3pct）：switch={sw1} | {v1[:40]}…")
     if sw1 or "维持当前配置" not in v1:
         fails.append(f"尾部守卫失效：仍建议切换（{v1}）")
 
     # 反向：尾部未恶化时不应误伤（该切就切）
-    v2, sw2 = msel._short_verdict([{"n_oos": 100}], 0.0003, 0.0003, 0.0,
-                                  dict(rec, p05=-0.0700), curf)
+    v2, sw2 = msel._short_verdict(
+        [{"n_oos": 100}], 0.0003, 0.0003, 0.0, dict(rec, p05=-0.0700), curf
+    )
     print(f"[12] 尾部守卫（5%分位未恶化）：switch={sw2}（期望 True）")
     if not sw2:
         fails.append(f"尾部未恶化却未建议切换（守卫过严）：{v2}")
@@ -386,9 +537,11 @@ def main():
     # 项目里曾把一次机器休眠误判成「卡死 2 小时」。这三条都属于「错了不会自己暴露」，
     # 必须由测试兜住。
     import time as _time
-    import phase_cache as pc
+
+    import quant_agent.infrastructure.persistence.phase_cache as pc
+
     sys.path.insert(0, ROOT)
-    import run as R
+    from quant_agent.application.investing import workflow as R
 
     ptmp = tempfile.mkdtemp(prefix="qt_cache_e2e_")
     _old_cache_dir = pc.CACHE_DIR
@@ -400,10 +553,17 @@ def main():
         # (a) 签名：与字典顺序无关，与内容强相关
         def _mk(seed, n=30):
             rng = np.random.default_rng(seed)
-            cl = 10 + np.cumsum(rng.normal(0, .2, n))
-            return pd.DataFrame({"date": [f"2026-08-{i + 1:02d}" for i in range(n)],
-                                 "open": cl, "high": cl * 1.01, "low": cl * .99,
-                                 "close": cl, "volume": rng.integers(1e5, 1e6, n)})
+            cl = 10 + np.cumsum(rng.normal(0, 0.2, n))
+            return pd.DataFrame(
+                {
+                    "date": [f"2026-08-{i + 1:02d}" for i in range(n)],
+                    "open": cl,
+                    "high": cl * 1.01,
+                    "low": cl * 0.99,
+                    "close": cl,
+                    "volume": rng.integers(1e5, 1e6, n),
+                }
+            )
 
         km_a = {("cn", "600519"): _mk(1), ("cn", "000333"): _mk(2)}
         km_b = {("cn", "000333"): _mk(2), ("cn", "600519"): _mk(1)}
@@ -416,14 +576,28 @@ def main():
             fails.append("K线内容变了签名却没变，缓存会把旧结果喂给新数据")
 
         # (b) numpy 标量必须降级为原生类型
-        pc.save("t13", "types", {"stop": np.float64(-0.05), "n": np.int64(7),
-                                 "flag": np.bool_(True), "nan": float("nan")})
+        pc.save(
+            "t13",
+            "types",
+            {
+                "stop": np.float64(-0.05),
+                "n": np.int64(7),
+                "flag": np.bool_(True),
+                "nan": float("nan"),
+            },
+        )
         bk = pc.load("t13", "types")
-        ok_types = (type(bk["stop"]) is float and type(bk["n"]) is int
-                    and bk["flag"] is True and bk["nan"] is None)
-        print(f"[13] JSON 往返类型：stop={type(bk['stop']).__name__} "
-              f"n={type(bk['n']).__name__} flag={type(bk['flag']).__name__} "
-              f"nan→{bk['nan']}")
+        ok_types = (
+            type(bk["stop"]) is float
+            and type(bk["n"]) is int
+            and bk["flag"] is True
+            and bk["nan"] is None
+        )
+        print(
+            f"[13] JSON 往返类型：stop={type(bk['stop']).__name__} "
+            f"n={type(bk['n']).__name__} flag={type(bk['flag']).__name__} "
+            f"nan→{bk['nan']}"
+        )
         if not ok_types:
             fails.append(f"缓存往返后类型不安全（数值比较会静默失效）：{bk}")
 
@@ -436,12 +610,11 @@ def main():
 
         pp = {"weights": {}, "score_threshold": 60, "backtest": {}}
         pc.clear("t13")
-        R.cached_phase("t13", _fn, "sig", pp, {"x": 1})                 # 冷 → 计算
-        hit = R.cached_phase("t13", _fn, "sig", pp, {"x": 1})           # 暖 → 命中
-        R.cached_phase("t13", _fn, "sig", pp, {"x": 2})                 # 配置变 → 重算
+        R.cached_phase("t13", _fn, "sig", pp, {"x": 1})  # 冷 → 计算
+        hit = R.cached_phase("t13", _fn, "sig", pp, {"x": 1})  # 暖 → 命中
+        R.cached_phase("t13", _fn, "sig", pp, {"x": 2})  # 配置变 → 重算
         R.cached_phase("t13", _fn, "sig", pp, {"x": 1}, no_cache=True)  # 强制重算
-        print(f"[13] 缓存 fn 调用次数 {len(calls)}（期望 3：冷启/配置变/强制重算）"
-              f" 命中返回 {hit}")
+        print(f"[13] 缓存 fn 调用次数 {len(calls)}（期望 3：冷启/配置变/强制重算） 命中返回 {hit}")
         if len(calls) != 3:
             fails.append(f"缓存命中逻辑错误：fn 被调用 {len(calls)} 次（期望 3）")
         if hit != {"v": 42}:
@@ -468,8 +641,10 @@ def main():
         has_done = "完成（" in joined
         print(f"[13] 阶段心跳：开始={has_start} 心跳={has_beat} 完成={has_done}")
         if not (has_start and has_beat and has_done):
-            fails.append(f"阶段心跳不完整：开始={has_start} 心跳={has_beat} "
-                         f"完成={has_done}（无法区分「在算」与「被冻」）")
+            fails.append(
+                f"阶段心跳不完整：开始={has_start} 心跳={has_beat} "
+                f"完成={has_done}（无法区分「在算」与「被冻」）"
+            )
     finally:
         pc.CACHE_DIR = _old_cache_dir
         R.log = _old_log
@@ -479,23 +654,26 @@ def main():
     # 抓取超预算会整片跳过某市场的标的，而报告照常生成——曾出现 cn / etf 两个市场被
     # 完全掐掉（评分通过 0 只）而报告看不出任何异常。用户会误读成「今天这个市场没有
     # 符合条件的标的」。缺数据而不自知比跑得慢危险得多，所以必须由报告显式披露。
-    from report import MARKET_NAMES, data_health_md
+    from quant_agent.infrastructure.reporting.investment import MARKET_NAMES, data_health_md
 
     if data_health_md(None) != "" or data_health_md({}) != "":
         fails.append("data_health_md 对空输入应返回空串")
-    healthy = {"cn": {"name": "cn 行情", "spent": 12.0, "budget": 180.0,
-                      "tripped": False, "missing": 0}}
+    healthy = {
+        "cn": {"name": "cn 行情", "spent": 12.0, "budget": 180.0, "tripped": False, "missing": 0}
+    }
     if data_health_md(healthy) != "":
         fails.append("data_health_md 对健康数据不应报警（否则会变成狼来了）")
-    bad = {"cn": {"name": "cn 行情", "spent": 193.0, "budget": 180.0,
-                  "tripped": True, "missing": 18},
-           "hk": {"name": "hk 行情", "spent": 6.0, "budget": 180.0,
-                  "tripped": False, "missing": 0}}
+    bad = {
+        "cn": {"name": "cn 行情", "spent": 193.0, "budget": 180.0, "tripped": True, "missing": 18},
+        "hk": {"name": "hk 行情", "spent": 6.0, "budget": 180.0, "tripped": False, "missing": 0},
+    }
     warn = data_health_md(bad)
     has_bits = all(s in warn for s in ("193", "180", "18", MARKET_NAMES.get("cn", "cn")))
     only_bad = warn.count("- **") == 1
-    print(f"[14] 数据完整性披露：关键数字齐={has_bits} "
-          f"只列问题市场={only_bad}（列出 {warn.count('- **')} 个）")
+    print(
+        f"[14] 数据完整性披露：关键数字齐={has_bits} "
+        f"只列问题市场={only_bad}（列出 {warn.count('- **')} 个）"
+    )
     if not has_bits:
         fails.append(f"数据完整性披露缺关键数字：{warn!r}")
     if not only_bad:
@@ -507,15 +685,17 @@ def main():
     # 新数据源（资金流/龙虎榜/…）的缺失留痕必须单独披露，且措辞要说明
     # 「不影响今日操作、但会让将来的因子样品缺一块」——与行情缺口混为一谈，
     # 要么把「今天照样能操作」说成「今天数据不可信」，要么把永久缺样本淹没掉。
-    src_warn = data_health_md({
-        "_missing_sources": [
-            {"source": "akshare_margin_sse", "market": "cn",
-             "reason": "上游无数据（nodata）"},
-            {"source": "akshare_lhb", "market": "cn",
-             "reason": "blocked: ConnectionError"},
-        ]})
-    src_ok = all(s in src_warn for s in ("新数据源", "不影响今日操作",
-                                        "akshare_margin_sse", "akshare_lhb"))
+    src_warn = data_health_md(
+        {
+            "_missing_sources": [
+                {"source": "akshare_margin_sse", "market": "cn", "reason": "上游无数据（nodata）"},
+                {"source": "akshare_lhb", "market": "cn", "reason": "blocked: ConnectionError"},
+            ]
+        }
+    )
+    src_ok = all(
+        s in src_warn for s in ("新数据源", "不影响今日操作", "akshare_margin_sse", "akshare_lhb")
+    )
     src_counts = src_warn.count("- **") == 1
     print(f"[14b] 新数据源缺失披露：措辞与来源齐={src_ok} 计为独立一类={src_counts}")
     if not src_ok:
@@ -523,8 +703,7 @@ def main():
     if not src_counts:
         fails.append("新数据源缺失被混进了行情缺口那一类")
     # 只有新源缺失时也必须出这段（否则「今天没采到」就没人知道）
-    if data_health_md({"_missing_sources": [{"source": "x", "market": "cn",
-                                             "reason": "y"}]}) == "":
+    if data_health_md({"_missing_sources": [{"source": "x", "market": "cn", "reason": "y"}]}) == "":
         fails.append("仅有新数据源缺失时未提示")
 
     print(f"\n报告: {md_path}\n      {html_path}")

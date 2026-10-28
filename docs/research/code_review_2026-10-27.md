@@ -93,7 +93,7 @@
 
 ## 已启动虚拟试验的影响
 
-只读检查`cold-start-20261027`原冻结清单，变更文件为`run.py`和`src/paper_daily.py`。`verify_runtime`按既有契约返回`frozen experiment code differs; settlement paused`。
+只读检查`cold-start-20261027`原冻结清单，变更文件为`run.py`和`src/quant_agent/application/paper/daily.py`。`verify_runtime`按既有契约返回`frozen experiment code differs; settlement paused`。
 
 策略与现金基准仍各有50,000元现金、空仓、零订单，日终记录为0。原账本及manifest没有改写。本轮没有绕过门禁恢复结算；继续前瞻试验需要带生效时点、保留原起点和全部记录的版本衔接。冷启动文档已同步这一状态，原手动推进命令不再被表述为当前可直接执行。
 

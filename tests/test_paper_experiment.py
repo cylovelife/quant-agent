@@ -5,21 +5,22 @@
 
 import json
 import sqlite3
+import subprocess
+import sys
 from dataclasses import asdict
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
-import subprocess
-import sys
 
 import pytest
 
+from quant_agent.infrastructure.configuration import load_policy
+
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
-import execution  # noqa: E402
-import paper_experiment as exp  # noqa: E402
-from paper_ledger import LedgerConflict, PaperLedger  # noqa: E402
-from paper_daily import daily_curve, settle_day  # noqa: E402
+import quant_agent.application.paper.experiment as exp  # noqa: E402
+import quant_agent.domain.trading.execution as execution  # noqa: E402
+from quant_agent.application.paper.daily import daily_curve, settle_day  # noqa: E402
+from quant_agent.application.paper.ledger import LedgerConflict, PaperLedger  # noqa: E402
 
 ZONE = ZoneInfo("Asia/Shanghai")
 NOW = datetime(2026, 11, 1, 10, tzinfo=ZONE)
@@ -56,7 +57,7 @@ def spec():
 
 @pytest.fixture
 def policy():
-    return execution.load_policy(ROOT / "params/execution_v1.json")
+    return load_policy(ROOT / "params/execution_v1.json")
 
 
 @pytest.fixture
@@ -116,9 +117,7 @@ def close(day="2026-11-02"):
 
 
 def initial(book):
-    return exp.settle_pair(
-        book, "study-1", "2026-11-01", None, calendar(), [], [], now=CLOSE1
-    )
+    return exp.settle_pair(book, "study-1", "2026-11-01", None, calendar(), [], [], now=CLOSE1)
 
 
 def buy(book):
@@ -171,14 +170,8 @@ def test_risk_violation_rolls_back_both_accounts(tmp_path, policy):
     initial(book)
     with pytest.raises(LedgerConflict, match="reserve|cap"):
         buy(book)
-    assert (
-        book.snapshot("strategy")["cash"]
-        == book.snapshot("benchmark")["cash"]
-        == "50000.00"
-    )
-    assert (
-        len(daily_curve(book, "strategy")) == len(daily_curve(book, "benchmark")) == 1
-    )
+    assert book.snapshot("strategy")["cash"] == book.snapshot("benchmark")["cash"] == "50000.00"
+    assert len(daily_curve(book, "strategy")) == len(daily_curve(book, "benchmark")) == 1
 
 
 def test_single_account_and_code_drift_are_blocked(book, monkeypatch):
@@ -221,9 +214,7 @@ def test_failure_in_benchmark_rolls_back_strategy(book):
     with pytest.raises(sqlite3.IntegrityError):
         buy(book)
     assert book.snapshot("strategy")["positions"] == []
-    assert (
-        len(daily_curve(book, "strategy")) == len(daily_curve(book, "benchmark")) == 1
-    )
+    assert len(daily_curve(book, "strategy")) == len(daily_curve(book, "benchmark")) == 1
 
 
 def test_flow_is_mirrored_and_first_trade_cannot_be_skipped(book):
@@ -259,11 +250,7 @@ def test_flow_is_mirrored_and_first_trade_cannot_be_skipped(book):
         [close("2026-11-03")],
         now=datetime(2026, 11, 3, 16, tzinfo=ZONE),
     )
-    assert (
-        got["strategy"]["net_external_flow"]
-        == got["benchmark"]["net_external_flow"]
-        == "100.00"
-    )
+    assert got["strategy"]["net_external_flow"] == got["benchmark"]["net_external_flow"] == "100.00"
     assert exp.compare(book, "study-1")["matching_cashflows"]
 
 
@@ -317,9 +304,7 @@ def test_late_start_and_unverified_source_do_not_advance(tmp_path, policy, book)
             quote(),
             now=CLOSE2,
         )
-    assert (
-        len(daily_curve(book, "strategy")) == len(daily_curve(book, "benchmark")) == 1
-    )
+    assert len(daily_curve(book, "strategy")) == len(daily_curve(book, "benchmark")) == 1
 
 
 def test_withdrawal_cannot_break_frozen_cash_reserve(book):
@@ -349,10 +334,8 @@ def test_withdrawal_cannot_break_frozen_cash_reserve(book):
     assert book.snapshot("benchmark")["net_external_flow"] == "0.00"
 
 
-def test_advance_cli_reads_raw_and_generates_frozen_order(
-    book, tmp_path, monkeypatch, capsys
-):
-    import execution_cli
+def test_advance_cli_reads_raw_and_generates_frozen_order(book, tmp_path, monkeypatch, capsys):
+    import quant_agent.entrypoints.execution as execution_cli
 
     class FrozenClock(datetime):
         @classmethod
@@ -414,9 +397,7 @@ def test_advance_cli_reads_raw_and_generates_frozen_order(
     assert result["days"][-1]["strategy"]["net_assets"] == "50099.40"
     assert result["days"][-1]["benchmark"]["net_assets"] == "50000.00"
     query = tmp_path / "compare.json"
-    query.write_text(
-        json.dumps({"ledger_path": str(book.path), "experiment_id": "study-1"})
-    )
+    query.write_text(json.dumps({"ledger_path": str(book.path), "experiment_id": "study-1"}))
     assert execution_cli.run_experiment_compare(str(query)) == 0
     assert json.loads(capsys.readouterr().out)["points"][-1]["difference"] == "99.40"
 

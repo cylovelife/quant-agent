@@ -19,15 +19,15 @@
 
 | 层 | 资产 | 位置 | 状态 |
 |---|---|---|---|
-| 数据 | 多源行情抓取（腾讯+东财+天天基金，降级+耗时熔断） | `src/fetcher.py`（611 行） | 生产运行中 |
-| 数据 | 中信建投源（关键指标/指数估值/行业排名，rc=102 分类降级） | `src/csc_source.py` | 生产运行中 |
-| 数据 | SQLite 落盘（K线幂等 upsert、TTL 复用、对称降级） | `src/store.py`（956 行） | 生产运行中 |
-| 因子 | 短线六因子 f_boll/rsi/volume/trend/macd/drawdown | `src/strategy.py` | **全部 \|ICIR\|<0.1，不显著** |
-| 因子 | 长期六维（质量+估值）+ Kronos 观察因子 f_kronos | `src/value_strategy.py` | 120日 IC=+0.155（t=5.24）唯一显著 |
-| 检验 | 滚动因子检验（唯一可信口径：IC/ICIR/t） | `src/factor_eval.py::rolling_factor_ic` | 生产运行中 |
-| 模型 | 走前 ML 验证器（Ridge/GBR，purge+embargo，置换检验） | `src/ml_eval.py`（433 行） | 只读验证，未过门禁 |
-| 迭代 | 每日复盘 + 贝叶斯在线调权（20 有效交易日门禁） | `src/evaluate.py::update_weights` | 生产运行中 |
-| 迭代 | 模型选型 walk-forward + 参数版本留存 | `src/model_select.py`, `params/` | 生产运行中 |
+| 数据 | 多源行情抓取（腾讯+东财+天天基金，降级+耗时熔断） | `src/quant_agent/infrastructure/market_data/fetcher.py`（611 行） | 生产运行中 |
+| 数据 | 中信建投源（关键指标/指数估值/行业排名，rc=102 分类降级） | `src/quant_agent/infrastructure/market_data/csc.py` | 生产运行中 |
+| 数据 | SQLite 落盘（K线幂等 upsert、TTL 复用、对称降级） | `src/quant_agent/infrastructure/persistence/store.py`（956 行） | 生产运行中 |
+| 因子 | 短线六因子 f_boll/rsi/volume/trend/macd/drawdown | `src/quant_agent/domain/strategies/short_term.py` | **全部 \|ICIR\|<0.1，不显著** |
+| 因子 | 长期六维（质量+估值）+ Kronos 观察因子 f_kronos | `src/quant_agent/application/investing/value_screening.py` | 120日 IC=+0.155（t=5.24）唯一显著 |
+| 检验 | 滚动因子检验（唯一可信口径：IC/ICIR/t） | `src/quant_agent/domain/research/factors.py::rolling_factor_ic` | 生产运行中 |
+| 模型 | 走前 ML 验证器（Ridge/GBR，purge+embargo，置换检验） | `src/quant_agent/domain/research/ml_eval.py`（433 行） | 只读验证，未过门禁 |
+| 迭代 | 每日复盘 + 贝叶斯在线调权（20 有效交易日门禁） | `src/quant_agent/application/investing/evaluation.py::update_weights` | 生产运行中 |
+| 迭代 | 模型选型 walk-forward + 参数版本留存 | `src/quant_agent/application/research/model_selection.py`, `params/` | 生产运行中 |
 | 外部 | Qlib 源码（Alpha158/Alpha360 handler + 34 个 contrib 模型） | `third_party/qlib` | ✅ 本地已核实 |
 | 外部 | Kronos（zero-shot K 线 embedding，RankIC 0.076 边缘显著） | `third_party/Kronos` | t=1.89，只当观察因子 |
 
@@ -179,7 +179,7 @@ t 值、决策时间）、决策者（自动门禁 or 人工）。**防止「这
    > 且**与东财异构**（不是同一条坏链路的替身）。大单明细（`stock_fund_flow_big_deal`）
    > 降为备选，行业/概念资金流只做展示、不做时序依赖。
    >
-   > 已落地：`fund_flow` 表（schema v5）、`src/datasources/` 适配层、`--fund-flow`
+   > 已落地：`fund_flow` 表（schema v5）、`src/quant_agent/infrastructure/market_data/datasources/` 适配层、`--fund-flow`
    > 与 `--akshare-probe` 子命令、日循环采集挂点、`tests/offline_datasources.py`（100 条断言）。
    > 证据见 `docs/research/phase1_data_channel_probe.md`。
 2. **龙虎榜**（席位/上榜原因）→ 事件驱动因子
@@ -189,7 +189,7 @@ t 值、决策时间）、决策者（自动门禁 or 人工）。**防止「这
 6. **公告事件流**（类型化：回购/增持/业绩预告）→ 事件因子
 
 **工程约束（v1.6 改写：原表述把「K 线类」的落盘方式写成了「一律」，与实现不符）**：
-- 新源一律实现为 `src/datasources/<name>.py` 的 adapter，**统一走 `SourceGuard`**
+- 新源一律实现为 `src/quant_agent/infrastructure/market_data/datasources/<name>.py` 的 adapter，**统一走 `SourceGuard`**
   （限速 / 按时长熔断 / 按源熔断 / 失败分类 / 画像 / 缺失留痕），不裸调第三方库
   ——第三方库会继承环境变量代理，并绕过限速、熔断与画像；
 - **K 线类**新源走 `store.upsert_kline(market, code, adjust, df, src=...)` 并复用
@@ -228,7 +228,7 @@ t 值、决策时间）、决策者（自动门禁 or 人工）。**防止「这
 
 移植纪律：**所有因子过同一把尺**（`rolling_factor_ic` + ICC/DEFF 修正 + 置换检验），
 不因为出身名门就免检。Alpha158 里大概率大量因子相关共线——移植时保留
-`src/indicators.py` 已有的共线诊断能力，先聚类去冗余再进池。
+`src/quant_agent/domain/market/indicators.py` 已有的共线诊断能力，先聚类去冗余再进池。
 
 **第二层：程序化因子挖掘（Phase 3）**
 
@@ -271,7 +271,7 @@ t 值、决策时间）、决策者（自动门禁 or 人工）。**防止「这
 2. **事件驱动因子族**：解禁前 N 日的供给冲击斜率；龙虎榜席位类型的次日衰减。
 3. **Kronos embedding 因子深化**：f_kronos 目前 t=1.89 边缘显著，
    尝试 embedding 的多维度展开（而非单一相似度）。
-4. **微观结构**：换手率衰减半衰期、量价背离度（`src/indicators.py` 已有原料）。
+4. **微观结构**：换手率衰减半衰期、量价背离度（`src/quant_agent/domain/market/indicators.py` 已有原料）。
 
 ### 3.3 L3 模型迭代：沿 Qlib 路线
 
@@ -279,7 +279,7 @@ t 值、决策时间）、决策者（自动门禁 or 人工）。**防止「这
 
 | 级 | 模型 | 本地可用性 | 引入条件 |
 |---|---|---|---|
-| 0 | Ridge / GBR（现行验证器） | ✅ `src/ml_eval.py` | 已在跑 |
+| 0 | Ridge / GBR（现行验证器） | ✅ `src/quant_agent/domain/research/ml_eval.py` | 已在跑 |
 | 1 | LightGBM | ✅ Qlib contrib `gbdt.py` 可参考，依赖轻 | Phase 4 首选：正式接入 walk-forward 对比 |
 | 2 | 深度时序：ALSTM / GATs / ADD | ✅ Qlib contrib 已有（pytorch_*） | 仅当 L1 数据扩展出**截面关系数据**（行业/概念图）后评估 |
 | 3 | 图+概念：HIST / IGMTF | ✅ 同上 | 同上，需要概念成分数据 |
@@ -350,7 +350,7 @@ t 值、决策时间）、决策者（自动门禁 or 人工）。**防止「这
 | Phase | 内容 | 交付物 | 验收标准 |
 |---|---|---|---|
 | **0 调研冲刺** | 联网核验所有 ⚠️ 项 | `docs/research/phase0_verification.md` | ✅ **已完成**（2026-09-25）：akshare 四类接口、GTJA191/101、AlphaGen、RD-Agent、11 篇前沿文献全部核验；方案升级 v1.1 |
-| **1 数据扩展** | akshare adapter；资金流/龙虎榜/两融/解禁四类新表；`--db-stats` 扩展 | `src/datasources/`、`store.py` 新表、`data_health` 按源画像 | **已完成**：资金流 + 龙虎榜（含机构统计）+ 两融 + 解禁 + 退市清单全部落地（5 张表）；现货降级链注入新浪全量源（`--spot-probe` 可逐档实测）；日循环挂点、缺失留痕进报告、219 条断言自检。<br>**遗留**：① **美股仍无第二源**（新浪美股要逐页抓 911 页，实测不可接受）——已如实标注，不摆一条永远失败的档；② **是否把新浪提到腾讯之前**（会改变每日候选池）待确认；③ 新表尚未进任何因子（属 Phase 2） |
+| **1 数据扩展** | akshare adapter；资金流/龙虎榜/两融/解禁四类新表；`--db-stats` 扩展 | `src/quant_agent/infrastructure/market_data/datasources/`、`store.py` 新表、`data_health` 按源画像 | **已完成**：资金流 + 龙虎榜（含机构统计）+ 两融 + 解禁 + 退市清单全部落地（5 张表）；现货降级链注入新浪全量源（`--spot-probe` 可逐档实测）；日循环挂点、缺失留痕进报告、219 条断言自检。<br>**遗留**：① **美股仍无第二源**（新浪美股要逐页抓 911 页，实测不可接受）——已如实标注，不摆一条永远失败的档；② **是否把新浪提到腾讯之前**（会改变每日候选池）待确认；③ 新表尚未进任何因子（属 Phase 2） |
 | **2 因子移植与体检** | Alpha158 可算子集 + 101/191 摘选移植；批量过 `rolling_factor_ic`；共线聚类去冗余 | `src/factors/` 因子注册表 + `factor_pool` 表初始数据 + 因子体检报告 | 每个因子一条 IC/ICIR/t/FDR 记录；产出因子池分级表（哪怕结论是「全灭」也是有效结论） |
 | **3 因子挖掘** | 表达式引擎 + 遗传规划搜索 + FDR 控制；LLM 假设生成（可选，依赖外部 LLM 调用） | 挖掘引擎 + 搜索结果台账 | ≥1 个搜索因子过四关门禁，或明确记录「搜索空间内无显著因子」（止损条款生效） |
 | **4 模型升级** | LightGBM 三方对比；Kronos 多维展开评估；深度模型引入评估（可能结论是「不引」） | 模型对比报告 + 接入/不接入决策记录（入台账） | 对比实验同数据同口径；决策有依据可回溯 |
@@ -502,7 +502,7 @@ quant-agent/
 - **v1.3 (2026-09-29)**：Phase 1 第一批落地（Step 2）。
   1. **资金流主口径改为同花顺全市场截面**（`stock_fund_flow_individual`，5211 只/次），
      覆盖 v1.2 的「大单明细自聚合」——后者降为备选；
-  2. 新增 `fund_flow` 表（schema v5）+ `src/datasources/` 适配层（护栏：限速/预算/
+  2. 新增 `fund_flow` 表（schema v5）+ `src/quant_agent/infrastructure/market_data/datasources/` 适配层（护栏：限速/预算/
      熔断/失败分类/健康画像/缺失留痕）+ `--fund-flow`、`--akshare-probe` 子命令；
   3. **日循环挂点**：每个交易日采集一次；同交易日「收盘后已抓过」才复用，
      盘中快照**不复用**（定盘价未出，与 K 线「跨过收盘必须失效」同一条纪律）；

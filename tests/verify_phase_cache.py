@@ -21,6 +21,7 @@
 
 默认／refresh模式要求配置已有有效固定日期边界；缺失时在行情缓存读取或抓取前退出2。
 """
+
 import argparse
 import copy
 import os
@@ -55,12 +56,19 @@ def check_run_wiring() -> list:
     阶段照样每次重算；线索只有「缓存目录里少一个文件」，极易被忽略。
     """
     import ast
-    src = open(os.path.join(ROOT, "run.py"), encoding="utf-8").read()
+
+    src = open(
+        os.path.join(ROOT, "src/quant_agent/application/investing/workflow.py"), encoding="utf-8"
+    ).read()
     wired = []
     for n in ast.walk(ast.parse(src)):
-        if (isinstance(n, ast.Call) and getattr(n.func, "id", None) == "cached_phase"
-                and n.args and isinstance(n.args[0], ast.Constant)
-                and isinstance(n.args[0].value, str)):
+        if (
+            isinstance(n, ast.Call)
+            and getattr(n.func, "id", None) == "cached_phase"
+            and n.args
+            and isinstance(n.args[0], ast.Constant)
+            and isinstance(n.args[0].value, str)
+        ):
             wired.append(n.args[0].value)
     return [p for p in REQUIRED_PHASES if p not in wired]
 
@@ -72,8 +80,8 @@ def main():
     mode.add_argument("--synthetic", action="store_true", help="纯构造行情，不读真实行情缓存或联网")
     args = ap.parse_args()
 
-    import run as R  # noqa: E402
-    from temporal_validation import configured_boundaries
+    from quant_agent.application.investing import workflow as R  # noqa: E402
+    from quant_agent.domain.research.validation import configured_boundaries
 
     params, cfg = R.load_configs()
     if args.synthetic:
@@ -86,13 +94,18 @@ def main():
         }
         cfg["model_select"] = {
             **(cfg.get("model_select") or {}),
-            "shorts": {"hold_days": [3, 5, 8], "stop_loss": [-0.05, None],
-                       "take_profit": [0.08, None]},
+            "shorts": {
+                "hold_days": [3, 5, 8],
+                "stop_loss": [-0.05, None],
+                "take_profit": [0.08, None],
+            },
         }
     boundaries = configured_boundaries(cfg)
     if boundaries is None:
-        print("不可验证：缺少有效且已结束的固定验证／测试日期边界；"
-              "尚未读取行情缓存或联网。可用 --synthetic 验证缓存机制。")
+        print(
+            "不可验证：缺少有效且已结束的固定验证／测试日期边界；"
+            "尚未读取行情缓存或联网。可用 --synthetic 验证缓存机制。"
+        )
         return 2
 
     print("=== 路由检查：run.py 是否对三个重阶段都启用了缓存 ===")
@@ -102,9 +115,10 @@ def main():
         return 1
     print(f"✅ {list(REQUIRED_PHASES)} 均已接入 cached_phase\n")
 
-    import exit_model as em  # noqa: E402
-    import model_select as msel  # noqa: E402
-    import phase_cache as pc  # noqa: E402
+    import quant_agent.application.research.model_selection as msel  # noqa: E402
+    import quant_agent.domain.research.exit_model as em  # noqa: E402
+    import quant_agent.infrastructure.persistence.phase_cache as pc  # noqa: E402
+
     kmap = oe.synthetic_kline_map() if args.synthetic else oe.build_kline_map(refresh=args.refresh)
     if not kmap:
         raise SystemExit("K 线缓存为空，先跑一次 tests/offline_e2e.py 或加 --refresh")
@@ -112,20 +126,29 @@ def main():
     ecfg = cfg.get("exit_model", {}) or {}
     mcfg = cfg.get("model_select", {}) or {}
     phases = [
-        ("exit_model", {
-            "min_bucket_n": int(ecfg.get("min_bucket_n", 20)),
-            "oos_frac": float(ecfg.get("oos_frac", 0.3)),
-            "shrink_k": float(ecfg.get("shrink_k", 25)),
-            "temporal_validation": cfg.get("temporal_validation"),
-        }, lambda: em.fit_exit_model(
-            kmap, params,
-            min_bucket_n=int(ecfg.get("min_bucket_n", 20)),
-            oos_frac=float(ecfg.get("oos_frac", 0.3)),
-            shrink_k=float(ecfg.get("shrink_k", 25)), boundaries=boundaries)),
+        (
+            "exit_model",
+            {
+                "min_bucket_n": int(ecfg.get("min_bucket_n", 20)),
+                "oos_frac": float(ecfg.get("oos_frac", 0.3)),
+                "shrink_k": float(ecfg.get("shrink_k", 25)),
+                "temporal_validation": cfg.get("temporal_validation"),
+            },
+            lambda: em.fit_exit_model(
+                kmap,
+                params,
+                min_bucket_n=int(ecfg.get("min_bucket_n", 20)),
+                oos_frac=float(ecfg.get("oos_frac", 0.3)),
+                shrink_k=float(ecfg.get("shrink_k", 25)),
+                boundaries=boundaries,
+            ),
+        ),
         ("param_scan", {}, lambda: em.parameter_scan(kmap, params)),
-        ("select_short", {"grid": mcfg.get("shorts"),
-                          "temporal_validation": cfg.get("temporal_validation")},
-         lambda: msel.select_short(cfg, params, kmap)),
+        (
+            "select_short",
+            {"grid": mcfg.get("shorts"), "temporal_validation": cfg.get("temporal_validation")},
+            lambda: msel.select_short(cfg, params, kmap),
+        ),
     ]
 
     sig = pc.kline_signature(kmap)
@@ -139,8 +162,9 @@ def main():
         hits = []
         R.log = lambda m: hits.append(str(m)) if "命中缓存" in str(m) else None
         try:
-            print(f"{'阶段':<14}{'fresh(s)':>10}{'prime(s)':>10}{'hit(s)':>9}"
-                  f"{'加速比':>8}   一致性")
+            print(
+                f"{'阶段':<14}{'fresh(s)':>10}{'prime(s)':>10}{'hit(s)':>9}{'加速比':>8}   一致性"
+            )
             for name, extra, fn in phases:
                 calls = []
 
@@ -149,24 +173,29 @@ def main():
                     return fn()
 
                 r_fresh, t_fresh = _elapsed(
-                    lambda: R.cached_phase(name, compute, sig, params, extra, no_cache=True))
+                    lambda: R.cached_phase(name, compute, sig, params, extra, no_cache=True)
+                )
                 r_prime, t_prime = _elapsed(
-                    lambda: R.cached_phase(name, compute, sig, params, extra))
+                    lambda: R.cached_phase(name, compute, sig, params, extra)
+                )
                 hits.clear()
-                r_hit, t_hit = _elapsed(
-                    lambda: R.cached_phase(name, compute, sig, params, extra))
+                r_hit, t_hit = _elapsed(lambda: R.cached_phase(name, compute, sig, params, extra))
 
                 a, b, c = (pc._sanitize(x) for x in (r_fresh, r_prime, r_hit))
                 ok = a is not None and a == b == c
                 speed = (t_prime / t_hit) if t_hit > 1e-6 else float("inf")
-                print(f"{name:<14}{t_fresh:>10.1f}{t_prime:>10.1f}{t_hit:>9.2f}"
-                      f"{speed:>7.0f}x   {'✅ 一致' if ok else '❌ 不一致或无结果'}")
+                print(
+                    f"{name:<14}{t_fresh:>10.1f}{t_prime:>10.1f}{t_hit:>9.2f}"
+                    f"{speed:>7.0f}x   {'✅ 一致' if ok else '❌ 不一致或无结果'}"
+                )
                 if not ok:
                     failures.append(name)
                     if isinstance(a, dict) and isinstance(c, dict):
                         for key in sorted(set(a) | set(c)):
                             if a.get(key) != c.get(key):
-                                print(f"    首个差异键 {key!r}:\n      fresh={a.get(key)!r}\n      hit  ={c.get(key)!r}")
+                                print(
+                                    f"    首个差异键 {key!r}:\n      fresh={a.get(key)!r}\n      hit  ={c.get(key)!r}"
+                                )
                                 break
                     else:
                         print(f"    fresh={a!r}\n    hit  ={c!r}")

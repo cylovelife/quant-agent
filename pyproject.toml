@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=77.0.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quant-agent"
+version = "0.1.0"
+description = "Local quantitative research, paper execution and competition experiments"
+requires-python = ">=3.11"
+dynamic = ["dependencies"]
+
+[project.optional-dependencies]
+research = ["scikit-learn==1.7.2"]
+sources = ["akshare==1.19.3"]
+competitions = ["scikit-learn==1.7.2", "openpyxl==3.1.5"]
+
+[project.scripts]
+quant-agent = "quant_agent.entrypoints.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["quant_agent*"]
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
+
+[tool.setuptools.package-data]
+"quant_agent.competitions.stock_price" = ["LICENSE-2.0.txt"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+extend-select = ["I"]

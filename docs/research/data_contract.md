@@ -5,7 +5,7 @@
 
 ## 已实现的行为
 
-- `src/data_quality.py` 集中处理数据来源、抓取时间、数值版本及准入检查。
+- `src/quant_agent/domain/market/quality.py` 集中处理数据来源、抓取时间、数值版本及准入检查。
   `store.load_kline` 和 `LocalData.get_data` 通过 `DataFrame.attrs.data_provenance`
   保留元数据，原有返回列保持兼容。周／月聚合另留底层输入观察与版本。
 - 行情快照格式升级为2，保留来源、逐日抓取时间及价格版本；仍可校验和镜像格式1。
