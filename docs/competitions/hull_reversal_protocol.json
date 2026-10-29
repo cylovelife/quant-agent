@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "registered_on": "2026-10-29",
+  "identity": "original transparent reversal inspired by public fourth-place framework; not original author strategy",
+  "expected_train_sha256": "8c1aba83e1bf34f91b234b7979f1fc7c397186b33a8d08bdd3634c08eb3810ca",
+  "expected_manifest_sha256": "bd5123b4d6e0e491dd10f580fdf489c4fdbb54c3929bfbfce203d7c9f65dd087",
+  "development_input_rows": 8544,
+  "development_last_id": 8543,
+  "development_windows": [
+    [
+      7536,
+      8040
+    ],
+    [
+      8040,
+      8544
+    ]
+  ],
+  "reserved_window": [
+    8544,
+    9048
+  ],
+  "reserved_evaluation_allowed": false,
+  "signal": {
+    "sum_window": 5,
+    "vol_window": 21,
+    "threshold": 1.0,
+    "strength": 0.25,
+    "max_active_position": 0.5,
+    "daily_volatility_floor": 1e-06,
+    "rule": "z=sum(last5 observed lagged(r-f))/(std(last21 lagged(r-f),ddof=1)*sqrt5); base=clip(1-0.25*sign(z)*max(abs(z)-1,0),0.5,1.5); neutral during warmup or near-zero volatility"
+  },
+  "risk": {
+    "signal_window": 252,
+    "portfolio_window": 252,
+    "min_observations": 126,
+    "update_every": 21,
+    "target_annual_volatility": 0.15,
+    "daily_volatility_floor": 1e-06,
+    "warmup_position": 1.0,
+    "portfolio_return_basis": "pre_overlay"
+  },
+  "risk_components": [
+    "candidate base exposure",
+    "constant one-market exposure"
+  ],
+  "comparators": [
+    "reversal",
+    "ridge",
+    "tree",
+    "market"
+  ],
+  "arms": [
+    "base",
+    "public_risk_overlay"
+  ],
+  "expected_scored_cases": 16,
+  "new_signal_configurations": 1,
+  "max_predictor_fits": 0,
+  "raw_reference": "frozen original float32 allocations, no refit/remapping during development",
+  "bootstrap": "same frozen OOF IDs for every comparator; historical Ridge/tree weights use earlier OOF-prediction RMS only, min63; dropped purge rows observed without decision",
+  "bootstrap_scale_min_observations": 63,
+  "rowwise_api_replay_rows": 16,
+  "reference_files": {
+    "frozen.json": "433a72f21d38937c816d00bb94f887fc1a960c6b609a0e18cc1351243457f722",
+    "results.json": "3488c73b58c646ff195faf797f7a96cda48d3a1a627a7c06c38ffe0544541467",
+    "development-1-ridge-predictions.csv": "0a221623784e46864c1e6604c39d74564a3cd98f17eefa6d01fe5c27ca21bfd4",
+    "development-1-ridge-oof.csv": "df0dcab9057425c8e899a04efbd695ed2c3675a631c6db49b3b8fa444b03c2fe",
+    "development-1-tree-predictions.csv": "7cd433dbfe8e5537119006e81b24e6771de7207a0d0feda97cfb7ed12dd1c007",
+    "development-1-tree-oof.csv": "addc39b5c3b46604a98de312def513fe9680cf99f2aabc515c04818d79b90fe4",
+    "development-2-ridge-predictions.csv": "f6eae7b6c80ed36182fc88cb0622bd5e550451488cb4387a42e0a8fbacf17fd7",
+    "development-2-ridge-oof.csv": "818c960cf366cca92aba20dede4d341a9904d1b10c669e5b02ab2712c29590e1",
+    "development-2-tree-predictions.csv": "0ec474cd0691392c9edcd600d23d11920da1c4d812d01f5d39714d981a9cee04",
+    "development-2-tree-oof.csv": "895ce3e1d1eca8067881e7e5fba3069d6b63841aa97a8a1ebff3602bcad437ba"
+  },
+  "official_scorer_sha256": "2f75bc0b1602afd3dd3d7da3415841c98ef49639b10d6dd53d261ea612c80ae6",
+  "online_submission_authorized": true,
+  "online_submission_budget": 1,
+  "online_submission_requires": "platform acceptance; current late-submission control disabled; no invented rank",
+  "reserved_scoring_authorized": false,
+  "promotion_allowed": false,
+  "selection_on_reserved_allowed": false,
+  "interpretation": "risk overlay is a fixed bundle, not proof of isolated component benefit; same development reuse; no rank implied",
+  "consistent_development_gain_definition": {
+    "primary": "reversal with public risk overlay",
+    "versus_models": "higher official score than both models with same overlay in each development window",
+    "versus_market": "gross return at least market and max drawdown no worse than market in each development window",
+    "meaning": "development diagnosis only, not promotion or rank; failure does not trigger extra search"
+  }
+}

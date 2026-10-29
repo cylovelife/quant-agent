@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "registered_on": "2026-10-29",
+  "purpose": "one Ridge return predictor with a predeclared clipped linear allocation rule",
+  "expected_training_rows": 9048,
+  "expected_train_sha256": "8c1aba83e1bf34f91b234b7979f1fc7c397186b33a8d08bdd3634c08eb3810ca",
+  "development_windows": [[7536, 8040], [8040, 8544]],
+  "reserved_window": [8544, 9048],
+  "reserved_window_evaluation_allowed": false,
+  "target": "market_forward_excess_returns",
+  "ridge": {"alpha": 100.0, "solver": "lsqr", "tol": 0.000001, "max_iter": 10000},
+  "features": "94 official base columns plus 3 one-record-lagged training fields",
+  "preprocessing": "training-only median imputation with empty columns kept, standardized values, all-column missing indicators",
+  "calibration": {"blocks": 3, "block_rows": 252, "source": "strictly earlier expanding-window out-of-fold predictions"},
+  "mapping": {"center": 1.0, "strength": 0.25, "rms_floor": 0.00000001, "bounds": [0.0, 2.0], "rule": "clip(1 + 0.25 * forecast / rms_oof, 0, 2); neutral if rms_oof below floor", "wire_precision": "float32 allocations, matching official Python-float scalar transport"},
+  "references": ["constant_0.5", "constant_1.0", "constant_1.5", "training_target_mean_with_same_ridge_mapping"],
+  "candidate_configurations": 1,
+  "max_model_fits": 8,
+  "search_allowed": false,
+  "api_replay": "16 rows from the second development window; no reserved or mock-test rows",
+  "platform_submission_allowed": false,
+  "promotion_to_personal_strategy_allowed": false
+}

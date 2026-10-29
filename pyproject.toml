@@ -13,6 +13,7 @@ dynamic = ["dependencies"]
 research = ["scikit-learn==1.7.2"]
 sources = ["akshare==1.19.3"]
 competitions = ["scikit-learn==1.7.2", "openpyxl==3.1.5"]
+hull = ["scikit-learn==1.7.2", "polars", "pyarrow==19.0.1", "grpcio", "protobuf"]
 
 [project.scripts]
 quant-agent = "quant_agent.entrypoints.cli:main"
@@ -26,6 +27,7 @@ dependencies = {file = ["requirements.txt"]}
 
 [tool.setuptools.package-data]
 "quant_agent.competitions.stock_price" = ["LICENSE-2.0.txt"]
+"quant_agent.competitions.hull" = ["OFFICIAL_METRIC_LICENSE.txt", "OFFICIAL_METRIC_NOTICE.md"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

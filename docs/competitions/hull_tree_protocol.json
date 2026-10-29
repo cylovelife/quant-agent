@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "registered_on": "2026-10-29",
+  "purpose": "one limited CPU tree versus a frozen reproduced Ridge and market; development only",
+  "expected_training_rows": 9048,
+  "expected_train_sha256": "8c1aba83e1bf34f91b234b7979f1fc7c397186b33a8d08bdd3634c08eb3810ca",
+  "development_windows": [
+    [
+      7536,
+      8040
+    ],
+    [
+      8040,
+      8544
+    ]
+  ],
+  "reserved_window": [
+    8544,
+    9048
+  ],
+  "reserved_window_evaluation_allowed": false,
+  "target": "market_forward_excess_returns",
+  "ridge": {
+    "alpha": 100.0,
+    "solver": "lsqr",
+    "tol": 1e-06,
+    "max_iter": 10000
+  },
+  "features": "94 official base columns plus 3 one-record-lagged training fields",
+  "preprocessing": "training-only median imputation with empty columns kept, standardized values, all-column missing indicators",
+  "calibration": {
+    "blocks": 3,
+    "block_rows": 252,
+    "source": "strictly earlier expanding-window out-of-fold predictions"
+  },
+  "mapping": {
+    "center": 1.0,
+    "strength": 0.25,
+    "rms_floor": 1e-08,
+    "bounds": [
+      0.0,
+      2.0
+    ],
+    "rule": "clip(1 + 0.25 * forecast / rms_oof, 0, 2); neutral if rms_oof below floor",
+    "wire_precision": "float32 allocations, matching official Python-float scalar transport"
+  },
+  "references": [
+    "constant_0.5",
+    "constant_1.0",
+    "constant_1.5",
+    "training_target_mean_with_same_ridge_mapping"
+  ],
+  "candidate_configurations": 1,
+  "max_model_fits": 8,
+  "search_allowed": false,
+  "api_replay": "16 second-development-window rows per model; no reserved/mock rows",
+  "platform_submission_allowed": false,
+  "promotion_to_personal_strategy_allowed": false,
+  "tree": {
+    "loss": "squared_error",
+    "learning_rate": 0.05,
+    "max_iter": 80,
+    "max_leaf_nodes": 7,
+    "max_depth": 3,
+    "min_samples_leaf": 64,
+    "l2_regularization": 10.0,
+    "max_bins": 63,
+    "categorical_features": null,
+    "early_stopping": false,
+    "random_state": 0
+  },
+  "frozen_reference_configurations": 1,
+  "max_total_comparison_fits": 16,
+  "hypothesis": "thresholds and feature interactions improve prediction and risk-adjusted allocation on both development windows",
+  "selection_policy": "record all results; no tuning, ensemble, promotion or reserved evaluation",
+  "mapping_comparison": "same fixed rule and strength; RMS estimated from each model own earlier OOF predictions",
+  "ridge_reference": {
+    "protocol_sha256": "760a70a02c6f7120c826bf9577d62a51d559bcd7e256cbe4c65271c040161842",
+    "results_sha256": "e548eef2e45803e8f8bf60519945ae9e7eb377821b8d345677a2db53665e3ab5",
+    "prediction_sha256": {
+      "1": "0a221623784e46864c1e6604c39d74564a3cd98f17eefa6d01fe5c27ca21bfd4",
+      "2": "f6eae7b6c80ed36182fc88cb0622bd5e550451488cb4387a42e0a8fbacf17fd7"
+    }
+  },
+  "diagnostics": [
+    "training/OOF/development MSE",
+    "development forecast RMS relative to earlier OOF RMS",
+    "gross return/volatility/drawdown/allocation change",
+    "Ridge-tree forecast correlation"
+  ]
+}

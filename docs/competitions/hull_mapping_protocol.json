@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "registered_on": "2026-10-29",
+  "purpose": "frozen-forecast allocation risk diagnosis; no predictor fitting or prediction",
+  "expected_train_sha256": "8c1aba83e1bf34f91b234b7979f1fc7c397186b33a8d08bdd3634c08eb3810ca",
+  "expected_manifest_sha256": "bd5123b4d6e0e491dd10f580fdf489c4fdbb54c3929bfbfce203d7c9f65dd087",
+  "development_input_rows": 8544,
+  "development_last_id": 8543,
+  "development_windows": [
+    [
+      7536,
+      8040
+    ],
+    [
+      8040,
+      8544
+    ]
+  ],
+  "reserved_window": [
+    8544,
+    9048
+  ],
+  "reserved_evaluation_allowed": false,
+  "model_fits_allowed": 0,
+  "model_predictions_allowed": 0,
+  "profiles": [
+    {
+      "name": "original",
+      "strength": 0.25,
+      "market_vol_floor": false
+    },
+    {
+      "name": "half_strength",
+      "strength": 0.125,
+      "market_vol_floor": false
+    },
+    {
+      "name": "market_vol_floor",
+      "strength": 0.25,
+      "market_vol_floor": true
+    },
+    {
+      "name": "floor_half_strength",
+      "strength": 0.125,
+      "market_vol_floor": true
+    }
+  ],
+  "mapping_rule": "clip(1 + strength*forecast/denominator,0,2); denominator=rms_oof or max(rms_oof,std_oof(forward_returns-risk_free_rate,ddof=1)); neutral if rms_oof<1e-8",
+  "wire_precision": "float32",
+  "benchmark_allocation": 1.0,
+  "scale_calibration": "earlier frozen OOF IDs with label_end strictly before evaluation start; no regression/score optimization",
+  "reference_files": {
+    "frozen.json": "433a72f21d38937c816d00bb94f887fc1a960c6b609a0e18cc1351243457f722",
+    "results.json": "3488c73b58c646ff195faf797f7a96cda48d3a1a627a7c06c38ffe0544541467",
+    "development-1-ridge-predictions.csv": "0a221623784e46864c1e6604c39d74564a3cd98f17eefa6d01fe5c27ca21bfd4",
+    "development-1-ridge-oof.csv": "df0dcab9057425c8e899a04efbd695ed2c3675a631c6db49b3b8fa444b03c2fe",
+    "development-1-tree-predictions.csv": "7cd433dbfe8e5537119006e81b24e6771de7207a0d0feda97cfb7ed12dd1c007",
+    "development-1-tree-oof.csv": "addc39b5c3b46604a98de312def513fe9680cf99f2aabc515c04818d79b90fe4",
+    "development-2-ridge-predictions.csv": "f6eae7b6c80ed36182fc88cb0622bd5e550451488cb4387a42e0a8fbacf17fd7",
+    "development-2-ridge-oof.csv": "818c960cf366cca92aba20dede4d341a9904d1b10c669e5b02ab2712c29590e1",
+    "development-2-tree-predictions.csv": "0ec474cd0691392c9edcd600d23d11920da1c4d812d01f5d39714d981a9cee04",
+    "development-2-tree-oof.csv": "895ce3e1d1eca8067881e7e5fba3069d6b63841aa97a8a1ebff3602bcad437ba"
+  },
+  "risk_endpoints": [
+    "active-return RMS",
+    "tracking error",
+    "strategy/market volatility ratio",
+    "max drawdown",
+    "allocation changes"
+  ],
+  "performance_endpoints": [
+    "official score and its components",
+    "gross cumulative return versus market"
+  ],
+  "expected_model_window_cases": 16,
+  "benchmark_window_cases": 2,
+  "interpretation": "risk reduction may be mechanical; no evidence of better prediction from changing mapping; development reuse is adaptive research",
+  "selection_allowed": false,
+  "promotion_allowed": false,
+  "platform_submission_allowed": false
+}

@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "registered_on": "2026-10-29",
+  "task": "evidence-bounded reconstruction of public fourth-place portfolio structure",
+  "reference_writeup": "https://www.kaggle.com/competitions/hull-tactical-market-prediction/writeups/4th-place-technical-model-no-learning-short-te",
+  "methodology_upstream": "https://github.com/morluto/rea",
+  "methodology_local_path": "/Users/cylove0330/Documents/tech/mydev/rea",
+  "methodology_revision": "54f5cf7e14e347d20828b07a991b644eafd080c9",
+  "reconstruction_level": "public_structure_only",
+  "original_strategy_reproduced": false,
+  "public_facts": [
+    "rule-based short-horizon mean-reversion alpha; exact construction explicitly undisclosed",
+    "auxiliary signals intended to stabilize allocation",
+    "normalized inverse-volatility combination",
+    "longer-history portfolio volatility estimate with periodic updates",
+    "final exposure equals leverage multiplier times combined exposure, clipped to 0..2"
+  ],
+  "unresolved_original_fields": {
+    "primary_alpha_definition": null,
+    "primary_alpha_inputs_and_history": null,
+    "auxiliary_signal_definitions": null,
+    "signal_volatility_measure_and_lookback": null,
+    "portfolio_volatility_estimator_and_lookback": null,
+    "pre_or_post_overlay_return_basis": null,
+    "target_volatility": null,
+    "risk_update_schedule": null,
+    "warmup_and_zero_risk_policy": null,
+    "original_daily_allocations_and_label_alignment": null,
+    "comparison_period_and_metric_definitions": null
+  },
+  "implemented_interpretation": {
+    "input_signal_values": "caller-supplied exposures; no alpha generator provided",
+    "risk_history": "caller-supplied realized signal strategy and portfolio returns",
+    "risk_availability": "history date strictly before decision; label-end ID at or before decision",
+    "risk_estimator": "sample standard deviations ddof=1; caller-selected trailing windows",
+    "annualization": 252,
+    "risk_return_basis": "caller must explicitly declare pre_overlay or post_overlay",
+    "update_interval": "caller-selected count of successful decisions",
+    "warmup_and_zero_risk": "caller-selected warmup exposure and positive volatility floor",
+    "output_precision": "float32 matching existing official transport convention",
+    "fidelity_status": "explicit original implementation choices where publication is incomplete"
+  },
+  "verification_layers": {
+    "public_formula_tests": "implemented and tested",
+    "synthetic_causal_replay": "implemented and tested",
+    "original_daily_behavior_equivalence": "unverifiable without original reference",
+    "real_competition_backtest": "not run",
+    "official_api_replay": "not run",
+    "rank_or_win_probability": "not estimated"
+  },
+  "true_reproduction_requirements": [
+    "original source, executable, callable reference or fully disclosed mathematical specification exposing the complete policy",
+    "identified inputs, preprocessing, initial state, parameters and update timing",
+    "original daily allocations or authoritative behavioral reference on identical inputs",
+    "declared comparison window, scoring semantics and tolerances",
+    "independent replay; matching only aggregate performance is insufficient"
+  ],
+  "implementation_defaults_are_original_parameters": false,
+  "synthetic_tests_are_original_strategy_evidence": false,
+  "new_predictor_fits": 0,
+  "candidate_alpha_searches": 0,
+  "reserved_predictions": 0,
+  "reserved_evaluations": 0,
+  "micro_innovation_started": false,
+  "platform_submission_allowed": false,
+  "promotion_allowed": false
+}

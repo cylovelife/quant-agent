@@ -65,3 +65,16 @@
   必须有真实前复权因子及可校验凭据，只支持已验证的现金分红／单位比例，未知因子或拆并股拒绝。
   不从raw缓存直接改名为qfq，不用推算成交额填补缺失。
   验证：`python3 -m pytest -q tests/test_etf_qfq_source.py`。
+
+## Hull 历史竞赛研究
+
+- 实现真理源为 `src/quant_agent/competitions/hull/`，实验参数、输入身份、预算和边界见
+  `docs/competitions/hull_*_protocol.json`；当前开发区间 `[7536,8040)`、`[8040,8544)`，
+  保留区间 `[8544,9048)` 未获预测或评分授权，不用于选型、暖机或晋级。
+- 冻结模型和旧实验只读，引用须核对哈希；新实验、修正及复现写新输出目录，不覆盖历史。
+  原始比赛数据、逐日预测和 API 原文件保留在忽略的 `state/competitions/`，不随源码交付。
+- `_official_metric_v3.py` 为带许可和来源声明的官方评分器，算法不改写；
+  成本情景与毛官方分数分开报告，本地 API 重放不代表线上提交、隐藏评测或获奖策略复原。
+- 验证：`.venv/bin/python -m pytest -q tests/test_hull_*.py`；
+  本轮复现及金融解释见 `docs/competitions/hull_ablation_2026-10-29.md`，
+  独立 review 和交付检查见 `docs/competitions/hull_delivery_2026-10-29.md`。

@@ -1,0 +1,7 @@
+# Isolated historical Hull API verification; preserve the existing project pins.
+-r requirements-dev.txt
+polars
+# PyArrow 26 rejects the project's frozen NumPy 1.26 at import time.
+pyarrow==19.0.1
+grpcio
+protobuf
