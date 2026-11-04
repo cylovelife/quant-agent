@@ -36,6 +36,8 @@ import re
 import numpy as np
 import pandas as pd
 
+from quant_agent.domain.research.value_features import VALUE_FEATURES
+
 # 长期轨六维（与 value_track.FACTORS_CORE 同源；这里显式列出以便特征与评分解耦）
 FEATURES = ["v_quality", "v_growth", "v_cashflow", "v_balance", "v_valuation"]
 DEFAULT_HORIZON = 120
@@ -66,12 +68,18 @@ def _model(kind: str = "ridge", seed: int = 0):
     刻意保留一个线性基线：几百个样本上 GBDT 很容易把噪声当结构，没有线性基线
     对照就无法区分「非线性真的有用」和「只是过拟合得更花哨」。
     """
-    if kind == "ridge":
+    if kind in ("ridge", "ridge_enriched"):
+        from sklearn.impute import SimpleImputer
         from sklearn.linear_model import Ridge
         from sklearn.pipeline import make_pipeline
         from sklearn.preprocessing import StandardScaler
 
-        return make_pipeline(StandardScaler(), Ridge(alpha=1.0))
+        # Same preprocessing for both feature sets: missingness is not feature gain.
+        return make_pipeline(
+            SimpleImputer(strategy="median", add_indicator=True, keep_empty_features=True),
+            StandardScaler(),
+            Ridge(alpha=1.0),
+        )
     if kind == "gbr":
         from sklearn.ensemble import HistGradientBoostingRegressor
 
@@ -93,7 +101,9 @@ def _fit_predict(model, xtr: pd.DataFrame, ytr: pd.Series, xte: pd.DataFrame):
     一类泄漏——它不在 y 上做手脚，而是在预处理里把未来带了进来。
     """
     xtr, xte = xtr.astype(float).copy(), xte.astype(float).copy()
-    if xtr.isna().to_numpy().any() or xte.isna().to_numpy().any():
+    if "simpleimputer" not in getattr(model, "named_steps", {}) and (
+        xtr.isna().to_numpy().any() or xte.isna().to_numpy().any()
+    ):
         med = xtr.median()
         med = med.where(med.notna(), 0.0)
         xtr = xtr.fillna(med)
@@ -321,6 +331,41 @@ def _p_value(real: float, nulls: list) -> "float | None":
     return float((1 + int((a >= real).sum())) / (1 + a.size))
 
 
+def _paired_feature_comparison(
+    validation: pd.DataFrame,
+    baseline: np.ndarray,
+    enriched: np.ndarray,
+    *,
+    baseline_kind: str,
+    ret_col: str,
+    min_n: int,
+) -> dict:
+    """Fixed development comparison on identical finite rows and dates."""
+    paired = validation.assign(_base=baseline, _extra=enriched)
+    deltas = []
+    for day, group in paired.groupby("date", sort=True):
+        group = group.loc[np.isfinite(group[["_base", "_extra", ret_col]].to_numpy()).all(axis=1)]
+        if len(group) < min_n or (group[["_base", "_extra", ret_col]].nunique() < 3).any():
+            continue
+        base_ic = _ic_series(group, "_base", ret_col, min_n)[0]
+        extra_ic = _ic_series(group, "_extra", ret_col, min_n)[0]
+        deltas.append({"date": str(day), "ic_gain": extra_ic - base_ic})
+    gains = np.asarray([item["ic_gain"] for item in deltas])
+    half = len(gains) // 2
+    passed = bool(
+        len(gains) >= 4
+        and gains.mean() >= 0.01
+        and min(gains[:half].mean(), gains[half:].mean()) >= -0.02
+    )
+    return {
+        "baseline": baseline_kind,
+        "paired_dates": deltas,
+        "passed": passed,
+        "mean_ic_gain": float(gains.mean()) if len(gains) else None,
+        "rule": "mean_gain>=0.01; both chronological halves>=-0.02; >=4 dates",
+    }
+
+
 def evaluate_against_rule(
     panel: pd.DataFrame,
     ret_col: str = "ret_120",
@@ -351,6 +396,8 @@ def evaluate_against_rule(
         "rule": None,
         "candidates": {},
         "selection_candidates": {},
+        "skipped_candidates": {},
+        "candidate_features": {},
         "best": None,
         "gate": {"passed": False},
         "perm": {},
@@ -362,6 +409,11 @@ def evaluate_against_rule(
         out["verdict"] = f"面板缺失或没有 {ret_col} 列，无法评估"
         return out
     out["n_rows"], out["n_periods"] = len(panel), int(panel["date"].nunique())
+    out["valuation_basis"] = (
+        sorted(panel["valuation_basis"].dropna().unique().tolist())
+        if "valuation_basis" in panel
+        else []
+    )
     if not purge:
         out["verdict"] = "清除跨界标签已关闭，不能用于独立测试或准入"
         return out
@@ -396,29 +448,78 @@ def evaluate_against_rule(
     ):
         out["verdict"] = "训练、验证或封存测试样本不足，预测为空，维持现状"
         return out
+    predictions = {}
     for kind in kinds:
+        candidate_columns = list(columns)
+        if kind == "ridge_enriched":
+            if "ridge" not in kinds:
+                out["skipped_candidates"][kind] = "same-model ridge control required"
+                continue
+            if not set(VALUE_FEATURES).issubset(panel):
+                out["skipped_candidates"][kind] = (
+                    "continuous value features missing; replay required"
+                )
+                continue
+            if train[list(VALUE_FEATURES)].notna().sum().sum() == 0:
+                out["skipped_candidates"][kind] = "continuous training features unavailable"
+                continue
+            candidate_columns = list(dict.fromkeys([*columns, *VALUE_FEATURES]))
+        out["candidate_features"][kind] = candidate_columns
         try:
             pred = _fit_predict(
-                _model(kind, seed), train[columns], train[ret_col].astype(float), val[columns]
+                _model(kind, seed),
+                train[candidate_columns],
+                train[ret_col].astype(float),
+                val[candidate_columns],
             )
             score = _summarize(val.assign(_pred=pred), "_pred", ret_col, min_n=min_n, trim=trim)
         except (ValueError, KeyError, TypeError):
             continue
         if score:
             out["selection_candidates"][kind] = score
+            predictions[kind] = pred
     if not out["selection_candidates"]:
         out["verdict"] = "验证集候选预测为空，维持现状"
         return out
-    best_kind = max(
-        out["selection_candidates"], key=lambda k: out["selection_candidates"][k]["ic_mean"]
-    )
+    base_kinds = [kind for kind in out["selection_candidates"] if kind != "ridge_enriched"]
+    if not base_kinds:
+        out["verdict"] = "连续特征消融需要同窗的原特征模型基线，维持现状"
+        return out
+    best_kind = max(base_kinds, key=lambda k: out["selection_candidates"][k]["ic_mean"])
+    if "ridge_enriched" in predictions and "ridge" in predictions:
+        # Isolate feature gain first, then compare against the best original model.
+        ablation = _paired_feature_comparison(
+            val,
+            predictions["ridge"],
+            predictions["ridge_enriched"],
+            baseline_kind="ridge",
+            ret_col=ret_col,
+            min_n=min_n,
+        )
+        comparison = _paired_feature_comparison(
+            val,
+            predictions[best_kind],
+            predictions["ridge_enriched"],
+            baseline_kind=best_kind,
+            ret_col=ret_col,
+            min_n=min_n,
+        )
+        accepted = ablation["passed"] and comparison["passed"]
+        out["feature_ablation"] = ablation | {"accepted_for_test": accepted}
+        out["model_comparison"] = comparison
+        if accepted:
+            best_kind = "ridge_enriched"
+    elif "ridge_enriched" in predictions:
+        out["skipped_candidates"]["ridge_enriched"] = "ridge control not evaluable on validation"
     out["best"] = best_kind
+    selected_columns = out["candidate_features"][best_kind]
+    out["features"] = selected_columns
     try:
         predicted = _fit_predict(
             _model(best_kind, seed),
-            final_train[columns],
+            final_train[selected_columns],
             final_train[ret_col].astype(float),
-            test[columns],
+            test[selected_columns],
         )
     except (ValueError, KeyError, TypeError) as exc:
         out["verdict"] = f"封存测试预测失败，维持现状：{exc}"
@@ -540,6 +641,27 @@ def render_md(res: dict) -> str:
         mark = " ★" if k == res.get("best") else ""
         lines.append(row(f"ML·{k}{mark}", res["candidates"][k]))
     lines.append("")
+    if res.get("feature_ablation"):
+        ablation = res["feature_ablation"]
+        gain = ablation["mean_ic_gain"]
+        gain_text = f"{gain:+.4f}" if gain is not None else "不可评估"
+        lines.append(
+            f"- 连续财务特征消融（开发验证）：对照 {ablation['baseline']}，"
+            f"相同日期平均 IC 增量 {gain_text}，进入测试={ablation['accepted_for_test']}。"
+            "测试结果不反向调整特征。"
+        )
+        comparison = res.get("model_comparison")
+        if comparison:
+            lines.append(
+                f"- 最优原模型比较：{comparison['baseline']}，通过={comparison['passed']}；"
+                "须同时通过同模型特征消融与最优原模型比较才进入测试。"
+            )
+    for kind, reason in res.get("skipped_candidates", {}).items():
+        lines.append(f"- 未运行 {kind}：{reason}")
+    if res.get("valuation_basis"):
+        lines.append(
+            "- 历史盈利收益率使用累计EPS算术重建；股本变动和每股口径可比性未校验，不能当作精确历史PE。"
+        )
     if perm.get("null_mean") is not None:
         lines.append(
             f"- 置换检验（固定测试预测，打乱测试截面内收益 {perm.get('n_perm')} 次）："

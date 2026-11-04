@@ -618,49 +618,83 @@ def _annual_rows(rows: list) -> list:
     """只保留年报行，按报告期升序。"""
     out = []
     for r in rows:
-        if str(r.get("REPORT_TYPE") or "").find("年报") >= 0:
+        if str(r.get("REPORT_DATE") or "")[:10].endswith("-12-31") and "年报" in str(
+            r.get("REPORT_TYPE") or ""
+        ):
             out.append(r)
     out.sort(key=lambda r: str(r.get("REPORT_DATE") or ""))
     return out
 
 
-def _ttm_eps(rows: list) -> float | None:
-    """近似 TTM EPS：用最近一期累计 EPS 与其同比增速外推。
-
-    季报 EPSJB 是累计值，直接当 TTM 会低估；这里做保守近似，
-    仅用于「PE 水平判断」，不参与分位计算（分位只用年报口径）。
-    """
-    for r in sorted(rows, key=lambda x: str(x.get("REPORT_DATE") or ""), reverse=True):
-        eps = r.get("EPSJB")
-        if eps is None:
+def _latest_report_periods(rows: list) -> list:
+    """Deduplicate periods by disclosed revision; caller owns the as-of cutoff."""
+    selected = {}
+    ordered = sorted(
+        rows,
+        key=lambda row: (str(row.get("REPORT_DATE") or "")[:10], str(row.get("NOTICE_DATE") or "")),
+        reverse=True,
+    )
+    for row in ordered:
+        period = str(row.get("REPORT_DATE") or "")[:10]
+        try:
+            date.fromisoformat(period)
+        except ValueError:
             continue
-        rt = str(r.get("REPORT_TYPE") or "")
-        if "年报" in rt:
-            return float(eps)
-        # 非年报：按营收同比把累计 EPS 折成 TTM 近似
-        tz = r.get("PARENTNETPROFITTZ")
-        factor = 1.0
-        if tz is not None:
-            try:
-                factor = max(0.5, min(2.0, 1 + float(tz) / 100.0))
-            except (TypeError, ValueError):
-                factor = 1.0
-        return float(eps) * factor
-    return None
+        selected.setdefault(period, row)
+    return list(selected.values())
+
+
+def _ttm_eps(rows: list) -> float | None:
+    """Annual EPS, or prior annual + current cumulative - prior matching cumulative.
+
+    This arithmetic does not verify historical share-count/split comparability. Missing
+    periods remain unknown; growth multipliers and older annual fallbacks are forbidden.
+    Only calendar-year reports are supported by the existing CN value workflow.
+    """
+    ordered = _latest_report_periods(rows)
+    if not ordered:
+        return None
+    latest = ordered[0]
+    period = date.fromisoformat(str(latest["REPORT_DATE"])[:10])
+    by_period = {str(row["REPORT_DATE"])[:10]: row for row in ordered}
+
+    def eps(row):
+        try:
+            value = float(row.get("EPSJB")) if row else float("nan")
+        except (TypeError, ValueError):
+            return None
+        return value if math.isfinite(value) else None
+
+    current = eps(latest)
+    if current is None:
+        return None
+    if (period.month, period.day) == (12, 31) and "年报" in str(latest.get("REPORT_TYPE")):
+        return current
+    if (period.month, period.day) not in {(3, 31), (6, 30), (9, 30)}:
+        return None
+    annual = by_period.get(f"{period.year - 1}-12-31")
+    prior = by_period.get(f"{period.year - 1}-{period.month:02d}-{period.day:02d}")
+    annual_eps, prior_eps = eps(annual), eps(prior)
+    if annual_eps is None or prior_eps is None or "年报" not in str(annual.get("REPORT_TYPE")):
+        return None
+    return annual_eps + current - prior_eps
 
 
 def derived_metrics(rows: list) -> dict:
     """从 F10 原始行派生估值/质量/成长/现金流/安全指标。全部容错，缺项为 None。"""
     if not rows:
         return {}
-    rows = sorted(rows, key=lambda r: str(r.get("REPORT_DATE") or ""), reverse=True)
+    rows = _latest_report_periods(rows)
+    if not rows:
+        return {}
     last = rows[0]
     ann = _annual_rows(rows)
 
     def g(r, k):
         v = r.get(k) if r else None
         try:
-            return float(v) if v is not None else None
+            number = float(v) if v is not None else None
+            return number if number is not None and math.isfinite(number) else None
         except (TypeError, ValueError):
             return None
 
@@ -676,13 +710,18 @@ def derived_metrics(rows: list) -> dict:
         return (sum((x - m) ** 2 for x in v) / (len(v) - 1)) ** 0.5
 
     # 质量：ROE 近 3 年（不足则取现有）
-    roes = [g(r, "ROEJQ") for r in ann[-3:]] or [g(last, "ROEJQ")]
-    gm = [g(r, "XSMLL") for r in ann[-3:]] or [g(last, "XSMLL")]
+    latest_annual_year = int(str(ann[-1]["REPORT_DATE"])[:4]) if ann else None
+    recent_ann = (
+        [r for r in ann if int(str(r["REPORT_DATE"])[:4]) >= latest_annual_year - 2] if ann else []
+    )
+    roes = [g(r, "ROEJQ") for r in recent_ann] or [g(last, "ROEJQ")]
+    gm = [g(r, "XSMLL") for r in recent_ann] or [g(last, "XSMLL")]
     m = {
         "report_date": str(last.get("REPORT_DATE") or "")[:10],
         "report_type": last.get("REPORT_TYPE"),
         "eps": g(last, "EPSJB"),
         "eps_ttm": _ttm_eps(rows),
+        "eps_ttm_basis": "reported_cumulative_eps_arithmetic_share_basis_unverified",
         "bps": g(last, "BPS"),
         "roe": g(last, "ROEJQ"),
         "roe_avg3": avg(roes),
@@ -709,9 +748,17 @@ def derived_metrics(rows: list) -> dict:
     else:
         m["ocf_to_profit"] = None
     # 3 年营收/净利 CAGR（用年报口径）
-    if len(ann) >= 4:
+    anchor = (
+        next(
+            (r for r in ann if int(str(r["REPORT_DATE"])[:4]) == latest_annual_year - 3),
+            None,
+        )
+        if ann
+        else None
+    )
+    if anchor is not None:
         for key, src in (("rev_cagr3", "TOTALOPERATEREVE"), ("profit_cagr3", "PARENTNETPROFIT")):
-            a, b = g(ann[-1], src), g(ann[-4], src)
+            a, b = g(ann[-1], src), g(anchor, src)
             if a and b and a > 0 and b > 0:
                 m[key] = round((a / b) ** (1 / 3) - 1, 4)
     return m

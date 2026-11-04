@@ -117,7 +117,8 @@
     "horizon": 120,
     "models": [
       "ridge",
-      "gbr"
+      "gbr",
+      "ridge_enriched"
     ],
     "min_train_periods": 6,
     "min_oof_periods": 8,

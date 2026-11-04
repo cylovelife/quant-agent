@@ -10,12 +10,14 @@ import sqlite3
 import sys
 from contextlib import closing
 from datetime import datetime, timedelta
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
 
+from quant_agent.application.research.forecasting import attach_forecasts
 from quant_agent.application.research.tracking import ensure_tracking_schema, track_research
 from quant_agent.domain.market.quality import assess_bars, build_data_contract
 from quant_agent.domain.market.serialization import canonical_json, digest
@@ -131,6 +133,10 @@ def research_daily(
         "numpy": np.__version__,
         "pandas": pd.__version__,
     }
+    try:
+        runtime["scikit_learn"] = version("scikit-learn")
+    except PackageNotFoundError:
+        runtime["scikit_learn"] = "unavailable"
     # Include evaluator settings and quality exclusions: never reuse a different evaluation.
     run_id = digest(
         canonical_json(
@@ -206,7 +212,7 @@ def research_daily(
                 else:
                     change = "evaluation_change"
             record = {
-                "format": 6,
+                "format": 7,
                 "run_id": run_id,
                 "dataset_id": dataset_id,
                 "snapshot_id": snapshot.name,
@@ -229,7 +235,9 @@ def research_daily(
                 "reused": False,
                 "quality": quality,
                 "metrics": metrics,
-                "observations": build_observations(valid, params, instrument_metadata),
+                "observations": attach_forecasts(
+                    build_observations(valid, params, instrument_metadata), valid, asof=asof
+                ),
                 "snapshot_path": str(snapshot),
                 "report_path": str(report_path),
                 "details_path": str(details_path),

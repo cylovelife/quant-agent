@@ -377,6 +377,15 @@ def _save_manifest(
         "market_summary": summary,
         "data_health": data_health,
         "top_picks": top,
+        "short_forecasts": {
+            market: [
+                {"code": str(row["code"]), "forecast": row["forecast"]}
+                for row in frame.to_dict("records")
+                if isinstance(row.get("forecast"), dict)
+            ]
+            for market, frame in today_picks.items()
+            if frame is not None and "forecast" in frame
+        },
         "elapsed_sec": round(elapsed, 1),
     }
     path = os.path.join(ROOT, "state", f"run_manifest_{manifest['date']}.json")
@@ -496,6 +505,10 @@ def _load_replay_panel(temporal_end=None):
         with open(path, encoding="utf-8") as f:
             cached = json.load(f) or {}
             if cached.get("temporal_test_end") != temporal_end:
+                return None
+            from quant_agent.domain.research.value_features import VALUE_FEATURE_VERSION
+
+            if cached.get("value_feature_version") != VALUE_FEATURE_VERSION:
                 return None
             return pd.DataFrame(cached.get("panel") or [])
     except Exception:
@@ -1531,6 +1544,22 @@ def run(args):
         data_health["_missing_sources"] = _missing_src
         log(f"  新数据源缺失 {len(_missing_src)} 条（已在报告数据完整性段落披露）")
 
+    # Research forecasts use the completed qfq cache only; no extra data request or order.
+    if run_short:
+        from quant_agent.application.research.forecasting import attach_forecasts
+
+        for market, frame in today_picks.items():
+            if frame is None or frame.empty or market == "fund":
+                continue
+            selected = frame.head(int(cfg.get("top_picks_per_market", 8)))
+            observed = attach_forecasts(
+                selected.to_dict("records"), kline_cache, asof=completed_asof
+            )
+            frame["forecast"] = pd.Series(
+                {idx: row.get("forecast") for idx, row in zip(selected.index, observed)},
+                dtype=object,
+            )
+
     # 4) 生成报告
     # 精简版是默认：每天只有几分钟看盘的人要的是「做什么」，不是「为什么」。
     # 完整版照旧生成（report_DATE.full.*），需要查证据时再翻。
@@ -1860,6 +1889,7 @@ def _long_replay_and_select(cfg, params, cached_raw, no_replay, today, log):
     ttl_days = float(lt_cfg.get("replay_ttl_days", 3))
     cache_path = os.path.join(ROOT, "state", "longterm_replay.json")
     from quant_agent.domain.research.validation import configured_boundaries
+    from quant_agent.domain.research.value_features import VALUE_FEATURE_VERSION
 
     boundaries = configured_boundaries(cfg)
     temporal_end = boundaries["test_end"] if boundaries else None
@@ -1872,6 +1902,8 @@ def _long_replay_and_select(cfg, params, cached_raw, no_replay, today, log):
                     cached = json.load(f)
                 if cached.get("temporal_test_end") != temporal_end:
                     raise ValueError("replay cache uses a different test cutoff")
+                if cached.get("value_feature_version") != VALUE_FEATURE_VERSION:
+                    raise ValueError("replay cache uses a different value feature schema")
                 rep = cached.get("summary")
                 panel = pd.DataFrame(cached.get("panel") or [])
                 log(f"  历史回放缓存命中（{age:.1f} 天前，TTL {ttl_days:.0f} 天）")
@@ -1918,6 +1950,7 @@ def _long_replay_and_select(cfg, params, cached_raw, no_replay, today, log):
                         {
                             "summary": rep,
                             "temporal_test_end": temporal_end,
+                            "value_feature_version": VALUE_FEATURE_VERSION,
                             "panel": panel.to_dict("records"),
                         },
                         f,

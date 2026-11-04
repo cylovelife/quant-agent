@@ -12,6 +12,7 @@ import pandas as pd
 from quant_agent.domain.market.indicators import add_indicators
 from quant_agent.domain.research.tracking_types import SIGNALS, STATUS_LABELS
 from quant_agent.domain.strategies.short_term import score_row
+from quant_agent.infrastructure.reporting.forecasting import forecast_table_md
 
 
 def _finite(value: float) -> float | None:
@@ -340,6 +341,9 @@ def render_report(record: dict) -> str:
             f"[查看逐标的评分依据、完整风险说明与数据来源]({details_path})",
             "",
         ]
+    forecast = forecast_table_md(observations)
+    if forecast:
+        lines += ["", "## 短期收益与波动研究", "", forecast]
     return "\n".join(lines)
 
 
@@ -588,4 +592,7 @@ def render_details(record: dict) -> str:
         "",
     ]
     lines.extend(render_tracking(record, detailed=True))
+    forecast = forecast_table_md(observations)
+    if forecast:
+        lines += ["", "## 短期收益与波动研究", "", forecast]
     return "\n".join(lines)

@@ -42,6 +42,7 @@ from quant_agent.domain.research.statistics import (
 from quant_agent.domain.research.statistics import (
     cross_section_ic as cross_section_ic,
 )
+from quant_agent.domain.research.value_features import VALUE_FEATURES
 from quant_agent.runtime.paths import WORKSPACE_ROOT
 
 ROOT = str(WORKSPACE_ROOT)
@@ -375,7 +376,10 @@ def replay_score(rows: list, k_raw: pd.DataFrame, t: str, weights: dict = None) 
     total = sum(avail[k2] * base_w[k2] for k2 in avail) / tw if tw else None
     return {
         "score": round(total, 1) if total is not None else None,
-        **{f"v_{k2}": round(v, 1) for k2, v in five.items()},
+        **{f"v_{k2}": round(v, 1) if v is not None else None for k2, v in five.items()},
+        **s["research_features"],
+        "value_evidence": s["value_evidence"],
+        "valuation_basis": m.get("eps_ttm_basis"),
         "price": price,
         "pe_ttm": m["pe_ttm"],
         "pb_pct": m["pb_pct"],
@@ -436,7 +440,9 @@ def historical_replay(
                 "market": market,
                 **{f: sc.get(f) for f in FACTORS_CORE},
                 "score": sc["score"],
+                "valuation_basis": sc.get("valuation_basis"),
             }
+            rec.update({name: sc.get(name) for name in VALUE_FEATURES})
             ok = True
             for n in miles:
                 j = i + n
@@ -478,6 +484,7 @@ def historical_replay(
         "return_basis": "raw_price_change_only",
         "total_return_status": "corporate_actions_unavailable",
         "n_symbols": int(df["code"].nunique()),
+        "valuation_basis": "reported_cumulative_eps_arithmetic_share_basis_unverified",
         "date_range": [str(df["date"].min()), str(df["date"].max())],
         "milestones": horizons,
         "panel": df,

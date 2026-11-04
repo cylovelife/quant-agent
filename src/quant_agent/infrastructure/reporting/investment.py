@@ -795,6 +795,9 @@ def longterm_picks_md(lt: "dict | None", cfg: "dict | None" = None) -> str:
                 + " |"
             )
         lines.append("\n".join(r2))
+        from quant_agent.infrastructure.reporting.forecasting import value_evidence_md
+
+        lines.append(value_evidence_md(d.to_dict("records")))
         # 逐只列一行「契合当前宏观偏向…」曾占满 10 行、且每行前缀完全相同。
         # 真正有信息量的只有「命中了哪几个标签」，压成一行。
         fits = [
@@ -1651,6 +1654,23 @@ def brief_md(
     if run_long:
         md.append("\n## 长期价值轨\n")
         md.append(brief_longterm_md(longterm))
+        stocks = ((longterm or {}).get("picks") or {}).get("stocks")
+        if isinstance(stocks, pd.DataFrame) and not stocks.empty:
+            from quant_agent.infrastructure.reporting.forecasting import value_evidence_md
+
+            md.append(value_evidence_md(stocks.head(5).to_dict("records")))
+    if run_short:
+        from quant_agent.infrastructure.reporting.forecasting import forecast_table_md
+
+        observations = [
+            row
+            for frame in today_picks.values()
+            if frame is not None
+            for row in frame.to_dict("records")
+        ]
+        forecast = forecast_table_md(observations)
+        if forecast:
+            md.extend(["\n## 短期收益与波动研究\n", forecast])
     if full_name:
         md.append(f"\n> 完整版（因子检验 / 离场规则体检 / 行业排名 / 指数估值）：`{full_name}`\n")
     return md
@@ -1722,6 +1742,18 @@ def generate_report(
                 continue
             md.append(f"\n### {MARKET_NAMES.get(mkt, mkt)}\n\n")
             md.append(picks_table(df, has_bt=True))
+        from quant_agent.infrastructure.reporting.forecasting import forecast_table_md
+
+        observations = [
+            row
+            for frame in today_picks.values()
+            if frame is not None
+            for row in frame.to_dict("records")
+        ]
+        forecast = forecast_table_md(observations)
+        if forecast:
+            md.append(h2("短期收益与波动研究"))
+            md.append(forecast)
         md.append(h2("卖出建议（硬规则平仓 + 模型离场信号）"))
         md.append(exit_advice_md(exit_advice_list, book, exit_model))
         md.append(h2("持仓账本与离场规则体检"))

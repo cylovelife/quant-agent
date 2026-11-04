@@ -227,6 +227,24 @@ def test_daily_uses_frozen_valid_data_and_records_metrics(db, tmp_path):
     assert rec["data_date"] == "2026-10-26"
 
 
+def test_daily_forecasts_are_recorded_rendered_and_do_not_change_parameters(db, tmp_path):
+    dates = pd.bdate_range(end="2026-10-26", periods=300)
+    insert(db, "000001", dates=dates)
+    params = json.loads((ROOT / "params/params.json").read_text())
+    before = json.dumps(params, sort_keys=True)
+    output = tmp_path / "research"
+    rec = research_daily(db, {"cn": ["000001"]}, params, output, asof="2026-10-26")
+    forecast = rec["observations"][0]["forecast"]
+    assert forecast["status"] == "observed"
+    assert not forecast["promotion_allowed"]
+    assert forecast["train_label_end"] < forecast["asof"]
+    assert "短期收益与波动研究" in Path(rec["daily_report_path"]).read_text()
+    assert "未经独立校准" in Path(rec["daily_details_path"]).read_text()
+    again = research_daily(db, {"cn": ["000001"]}, params, output, asof="2026-10-26")
+    assert again["reused"] and again["observations"][0]["forecast"] == forecast
+    assert json.dumps(params, sort_keys=True) == before
+
+
 def test_invalid_ohlcv_is_not_silently_used(db, tmp_path):
     insert(db)
     with sqlite3.connect(db) as conn:

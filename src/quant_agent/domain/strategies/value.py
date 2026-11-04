@@ -8,6 +8,7 @@ import re
 import numpy as np
 import pandas as pd
 
+from quant_agent.domain.research.value_features import value_evidence, value_features
 from quant_agent.domain.strategies import macro as mc
 
 DEFAULT_WEIGHTS = {
@@ -351,6 +352,8 @@ def score_longterm(m: dict, ms: dict, weights: dict = None) -> dict:
         out["cashflow_note"] = flow_note
     out["financial_like"] = bool(financial_like)
     out["tags"] = tags
+    out["research_features"] = value_features(m)
+    out["value_evidence"] = value_evidence(m)
     return out
 
 
