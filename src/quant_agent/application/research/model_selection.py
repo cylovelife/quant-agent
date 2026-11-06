@@ -62,6 +62,22 @@ LONG_SCHEMES = {
 }
 CORE_ONLY = ["quality", "growth", "cashflow", "balance", "valuation"]
 
+
+def long_weight_score(panel: pd.DataFrame, weights: dict[str, float]) -> pd.Series:
+    """Shared five-factor scoring; absent factors do not acquire implicit weight."""
+    usable = {
+        f"v_{key}": float(weights[key])
+        for key in CORE_ONLY
+        if f"v_{key}" in panel and weights.get(key, 0) > 0
+    }
+    if not usable:
+        raise ValueError("no usable long factors")
+    return sum(
+        pd.to_numeric(panel[key], errors="coerce").fillna(50) * weight
+        for key, weight in usable.items()
+    ) / sum(usable.values())
+
+
 # 尾部容忍度：建议参数的 5% 分位比当前配置差超过这个幅度，就不允许切换。
 # 低吸策略的核心风险在左尾（接飞刀），「靠加深尾部换日均收益」不是改进，是换了风险偏好。
 TAIL_TOL = 0.02
@@ -272,8 +288,8 @@ def _select_long_descriptive(
         ww = {k: v for k, v in ww.items() if k in ok and v > 0}
         if not ww:
             continue
-        tw = sum(ww.values()) or 1.0
-        score = sum(pd.to_numeric(panel[k], errors="coerce").fillna(50) * ww[k] for k in ww) / tw
+        tw = sum(ww.values())
+        score = long_weight_score(panel, w)
         p = panel.assign(_wscore=score)
         per = {}
         for n in milestones:
@@ -359,13 +375,7 @@ def select_long(panel: pd.DataFrame, cfg: dict, milestones=(20, 60, 120)) -> dic
         total = sum(usable.values())
         if not total:
             return {}
-        score = (
-            sum(
-                pd.to_numeric(parts.test[k], errors="coerce").fillna(50) * weight
-                for k, weight in usable.items()
-            )
-            / total
-        )
+        score = long_weight_score(parts.test, weights)
         frame = parts.test.assign(_wscore=score)
         return {
             str(n): vt.cross_section_ic(

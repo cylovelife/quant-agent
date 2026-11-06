@@ -23,6 +23,10 @@ from quant_agent.infrastructure.persistence.snapshots import price_dataset_id, r
 from quant_agent.runtime.paths import WORKSPACE_ROOT
 
 APP_ID = 0x51524531
+# Internal application capability, not an OS security boundary. Generic CLI
+# callers cannot manufacture controlled registration provenance with JSON.
+_CONTROLLED_REGISTRATION = object()
+CONTROLLED_FORMAT = "synthetic_long_weights_v1"
 ROOT = WORKSPACE_ROOT
 DDL = (
     """CREATE TABLE experiments (experiment_id TEXT PRIMARY KEY, identity_json TEXT NOT NULL,
@@ -136,6 +140,12 @@ class ExperimentRegistry:
             conn.execute("BEGIN IMMEDIATE" if write else "BEGIN")
             try:
                 if write:
+                    conn.execute("""CREATE TABLE IF NOT EXISTS controlled_registrations (
+                        experiment_id TEXT PRIMARY KEY REFERENCES experiments(experiment_id))""")
+                    for op in ("UPDATE", "DELETE"):
+                        conn.execute(f"""CREATE TRIGGER IF NOT EXISTS controlled_registration_no_{op.lower()}
+                            BEFORE {op} ON controlled_registrations
+                            BEGIN SELECT RAISE(ABORT,'research evidence is append-only'); END""")
                     conn.execute("""CREATE TABLE IF NOT EXISTS managed_attempt_results (
                         attempt_id TEXT PRIMARY KEY REFERENCES experiment_results(attempt_id))""")
                     for op in ("UPDATE", "DELETE"):
@@ -148,7 +158,7 @@ class ExperimentRegistry:
                 conn.rollback()
                 raise
 
-    def register(self, snapshot_path, spec):
+    def register(self, snapshot_path, spec, *, _registration_token=None):
         """Freeze actual local snapshot and complete protocol; no candidate or score is created."""
         required = {
             "universe",
@@ -162,6 +172,17 @@ class ExperimentRegistry:
         }
         if not isinstance(spec, dict) or set(spec) != required:
             raise ValueError("missing or unknown experiment fields")
+        controlled = _registration_token is _CONTROLLED_REGISTRATION
+        parameters = spec.get("parameters")
+        protocol = parameters.get("protocol") if isinstance(parameters, dict) else None
+        if (
+            isinstance(protocol, dict)
+            and protocol.get("format") == CONTROLLED_FORMAT
+            and not controlled
+        ):
+            raise ValueError(
+                "controlled protocol requires the dedicated research-loop registration"
+            )
         if (
             not isinstance(spec["features"], list)
             or not spec["features"]
@@ -212,6 +233,13 @@ class ExperimentRegistry:
             if old:
                 if json.loads(old["identity_json"]) != identity:
                     raise RuntimeError("experiment identity mismatch")
+                if (
+                    controlled
+                    and not conn.execute(
+                        "SELECT 1 FROM controlled_registrations WHERE experiment_id=?", (eid,)
+                    ).fetchone()
+                ):
+                    raise ValueError("existing experiment lacks controlled registration provenance")
                 return {
                     "experiment_id": eid,
                     "identity": identity,
@@ -230,6 +258,8 @@ class ExperimentRegistry:
                 "INSERT INTO experiments VALUES (?,?,?,?,?)",
                 (eid, _json(identity), split["test_start"], split["test_end"], _now()),
             )
+            if controlled:
+                conn.execute("INSERT INTO controlled_registrations VALUES (?)", (eid,))
         return {
             "experiment_id": eid,
             "identity": identity,
@@ -502,6 +532,43 @@ class ExperimentRegistry:
                 raise ValueError("budget exhausted before test lock")
             conn.execute("INSERT INTO experiment_locks VALUES (?,?,?)", (eid, cid, _now()))
         return {"candidate_id": cid, "replayed": False}
+
+    def require_controlled_registration(self, eid: str) -> None:
+        """Reject legacy/generic records before any snapshot runtime check reads data."""
+        with self.connection() as conn:
+            table = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='controlled_registrations'"
+            ).fetchone()
+            if (
+                table is None
+                or conn.execute(
+                    "SELECT 1 FROM controlled_registrations WHERE experiment_id=?", (eid,)
+                ).fetchone()
+                is None
+            ):
+                raise ValueError("dedicated controlled registration required")
+
+    def managed_result(self, eid: str, cid: str, attempt_id: str, phase: str) -> dict:
+        """Read only completed, managed evidence for an exact immutable intent."""
+        with self.connection() as conn:
+            identity = self._experiment(conn, eid)
+            self._check_runtime(identity)
+            row = conn.execute(
+                """SELECT r.outcome,r.result_json,r.elapsed_seconds,m.attempt_id AS managed
+                   FROM experiment_attempts a
+                   JOIN experiment_results r ON r.attempt_id=a.attempt_id
+                   LEFT JOIN managed_attempt_results m ON m.attempt_id=a.attempt_id
+                   WHERE a.experiment_id=? AND a.candidate_id=? AND a.attempt_id=? AND a.phase=?""",
+                (eid, cid, attempt_id, phase),
+            ).fetchone()
+        if row is None or row["managed"] is None:
+            raise ValueError("completed managed evidence required")
+        if (
+            row["outcome"] != "succeeded"
+            or row["elapsed_seconds"] > identity["budget"]["max_attempt_seconds"]
+        ):
+            raise ValueError("successful managed evidence within budget required")
+        return json.loads(row["result_json"])
 
     def inspect(self, eid):
         with self.connection() as conn:

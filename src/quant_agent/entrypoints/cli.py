@@ -17,6 +17,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap = argparse.ArgumentParser()
     research_cli.add_arguments(ap)
     ap.add_argument(
+        "--research-loop", metavar="REQUEST_JSON", help="构造数据研究：验证、锁定、隔离测试"
+    )
+    ap.add_argument(
         "--research-experiment", metavar="REQUEST_JSON", help="显式登记或检查本地研究实验"
     )
     ap.add_argument(
@@ -116,6 +119,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     options = {arg.split("=", 1)[0] for arg in argv}
+    if "--research-loop" in options:
+        from quant_agent.entrypoints.research_loop import main as loop_main
+
+        parser = argparse.ArgumentParser(description="构造数据受控研究闭环")
+        parser.add_argument("--research-loop", required=True)
+        return loop_main(parser.parse_args(argv).research_loop)
     if "--research-experiment" in options:
         from quant_agent.entrypoints.research_experiment import main as experiment_main
 

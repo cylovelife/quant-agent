@@ -57,6 +57,12 @@
   `docs/research/temporal_validation.md`；缺固定日期边界或实际结束日不可作为封存测试。
   验证：`python3 -m pytest -q tests/test_temporal_validation.py`。
 
+- 构造数据受控研究闭环见 `docs/research/controlled_loop.md` 与
+  `src/quant_agent/application/research/controlled_loop.py`；仅长期内置权重候选，
+  验证后锁定再一次测试，不接入真实封存文件或前瞻账户。
+  验证：`python3 -m pytest -q tests/test_research_loop.py`；完整 CLI 构造回执：
+  `python3 tests/offline_research_loop.py --output reports/research-loop-demo`（目录必须不存在）。
+
 - 试验代码版本衔接见 `src/quant_agent/application/paper/runtime.py`、`docs/research/paper_runtime_handoff.md`；
   只在全新副本追加运行版本，原登记、本金和继承历史不改，缺未结算日／代码再次漂移须暂停。
   首版仅支持单实验、策略与现金基准两账户的独立账本。
