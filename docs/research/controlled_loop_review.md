@@ -17,9 +17,23 @@
 - 研究闭环/门禁、实验登记、时序、成交/账本、前瞻试验/版本衔接八组测试：**145 passed**。
 - 修改 Python 文件 Ruff lint 与 format check、`git diff --check` 通过。
 - 四项基础离线检查均在本轮重新通过；构造行情 E2E 通过（含 **161 passed**）。完整 research-loop CLI 五阶段回执在 `reports/research-loop-reviewed/`，代码指纹与最终源码一致，3 次验证及 1 次测试均成功且未超预算。
-- 包结构回归 **7 passed, 1 deselected**；排除的全包导入检查缺口见下一项，不计为通过。
-- 全包导入检查仍缺 Hull 可选依赖 `polars`，不宣称该项通过；它不属于本次构造研究入口的运行依赖。未为此接入竞赛数据。
+- 初次包结构回归为 **7 passed, 1 deselected**；当时全包导入因缺少 Hull 可选依赖 `polars` 被排除，未计为通过。该依赖现已补齐，被排除项的单独复验结果见下节；不将两次执行改写为一次全量测试。
 - 所有研究结果继续 `promotion_allowed=false`、`independent_new_samples=0`、`total_return=null`；未触碰真实封存数据或推进已有账户。
+
+## 依赖补齐后的全包导入复验
+
+2026-11-06，在主工程 `/Users/cylove0330/Documents/tech/mydev/quant-agent` 的 `.venv` 中，按 `requirements-hull.lock` 补齐 `polars==2.1.0` 和 `polars-runtime-32==2.1.0`。安装使用从锁文件提取的原版本及 SHA-256 条目，通过 `uv pip install --no-deps --require-hashes --only-binary :all:` 校验后安装；未改动锁文件。安装后已分别核对包元数据版本及 `polars.__version__`。
+
+在源码提交 `bb05e17f6a3b7f3714a2361061126d9a8b2901d2` 上执行：
+
+```bash
+cd /Users/cylove0330/Documents/tech/mydev/quant-agent
+.venv/bin/python -m pytest -q tests/test_package_architecture.py::test_importing_all_modules_does_not_create_workspace_or_connect
+```
+
+结果：**1 passed in 5.67s**。检查在独立子进程中遍历并导入整个 `quant_agent` 包，禁止 socket 连接，使用临时工作目录和临时 `QUANT_AGENT_HOME`，断言导入不创建运行 workspace。仅执行模块导入检查，未读取真实封存数据或推进前瞻账户。原全包导入缺口已关闭；该结果不代表运行 Hull 数据流程或账户流程。
+
+本次文档补录复用上述新鲜实测结果，并再次核对安装版本；只做文档 diff、引用及 Git 交付检查，不因文档变更重跑业务测试。沿用已加载的 `git-workflow`、`finishing-a-development-branch`、`verification-before-completion` 与项目 `AGENTS.md`。
 
 ## 交付与规则
 

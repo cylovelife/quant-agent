@@ -52,7 +52,7 @@ python -m pytest -q tests/test_research_loop.py tests/test_research_loop_gates.p
 - 四项规定基础检查 `offline_store.py`、`offline_datasources.py`、`offline_long.py`、`offline_ml.py` 均通过。数据源测试首次因新 worktree 缺少空 `state/cache` 目录退出，补建该测试前置目录后通过，未修改数据源业务逻辑。
 - `offline_e2e.py --synthetic` 通过，内含 **161 passed** 及构造行情端到端断言。成交与账本回归也已通过。
 - 修改文件的 Ruff lint、format check、`git diff --check` 通过。四个新增模块在禁止 socket 连接、全新工作目录下可导入，不创建运行 workspace。
-- 扩展的全包导入检查未通过：当前 Python 环境缺少 Hull 可选依赖 `polars`。未安装竞赛依赖或读取竞赛数据；该缺口不表述为全包检查通过。
+- 首轮扩展的全包导入检查因当时环境缺少 Hull 可选依赖 `polars` 未通过；保留该历史结果。2026-11-06 已按锁定版本补齐并单独复验通过，见 [依赖补齐后的全包导入复验](controlled_loop_review.md#依赖补齐后的全包导入复验)。
 - 最终完整 CLI 回执位于 `reports/research-loop-verified/`，回执代码指纹与当前源码一致；3 次验证和 1 次测试均成功且在 30 秒预算内。构造情景选中 `quality_first`，本金 10000.00，期末净资产 10018.99，default 为 9978.99，现金为 10000.00。全部仅为构造数据对账证据。
 
 实际加载的流程 Skill：`writing-plans`、`test-driven-development`（含 testing-anti-patterns）、`using-git-worktrees`、`verification-before-completion`。规则：项目 `AGENTS.md`、全局 `skills-index.md` 路由、`engineering-workflow.md`、`python/code-style.md`、`python/data-runtime.md`、`shared-code-change-safety.md`。本轮不涉及 Git 远程交付、真实行情采集或生产准入，未启动这些流程。
