@@ -31,7 +31,7 @@ def main(request_path: str) -> int:
                 "validate": loop.validate,
                 "lock": loop.lock,
                 "test": loop.test,
-                "status": loop.registry.inspect,
+                "status": loop.status,
             }
             if operation not in methods:
                 raise ValueError("unknown research operation")

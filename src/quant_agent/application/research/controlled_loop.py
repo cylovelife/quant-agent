@@ -23,6 +23,11 @@ from quant_agent.application.research.experiments import (
 from quant_agent.application.research.loop_data import check_phase, read_artifact, snapshot_frames
 from quant_agent.application.research.model_selection import FACTORS_CORE, LONG_SCHEMES
 from quant_agent.domain.market.serialization import canonical_json, digest
+from quant_agent.domain.research.decision import (
+    CandidateEvidence,
+    ScientificPolicy,
+    judge_candidate,
+)
 from quant_agent.domain.research.validation import configured_boundaries
 from quant_agent.domain.trading.execution import policy_from_definition
 from quant_agent.infrastructure.persistence.snapshots import publish_snapshot
@@ -42,8 +47,10 @@ def _check_protocol(manifest: dict) -> None:
         "policy",
         "initial_cash",
         "budget",
+        "scientific_policy",
     }:
         raise ValueError("unknown or missing research manifest fields")
+    ScientificPolicy.parse(manifest["scientific_policy"])
     if (
         manifest["format"] != FORMAT
         or configured_boundaries({"temporal_validation": manifest["split"]}) is None
@@ -95,7 +102,7 @@ def _spec(manifest: dict, instruments: list[dict]) -> dict:
                 {"scheme": name, "weights": LONG_SCHEMES[name]} for name in manifest["candidates"]
             ],
             "instruments": instruments,
-            "selection": "max_validation_net_assets_then_declared_order",
+            "selection": "eligible_then_max_validation_net_assets_then_declared_order",
             "top_k": 1,
             "quantity": 100,
         },
@@ -256,11 +263,13 @@ class ResearchLoop:
             self.registry.managed_result(
                 eid, cid, self.attempt_id(eid, cid, "validation"), "validation"
             )
-        return {"validation": results, "promotion_allowed": False}
+        review, _ = self._validation_review(eid)
+        return {"validation": results, **review}
 
-    def _winner(self, eid: str) -> tuple[str, dict]:
+    def _validation_review(self, eid: str) -> tuple[dict, tuple[str, dict] | None]:
+        """Derive a decision from immutable managed validation evidence only."""
         _, protocol, definitions = self._context(eid)
-        scored = []
+        evidence = []
         for definition in definitions:
             cid = digest(canonical_json(definition))
             result = self.registry.managed_result(
@@ -272,17 +281,89 @@ class ResearchLoop:
                 protocol["validation"]["sha256"],
             ) or result.get("candidates") != [definition]:
                 raise ValueError("managed validation differs from frozen intent")
-            score = Decimal(result["accounts"][0]["net_assets"])
+            account = result["accounts"][0]
+            score = Decimal(account["net_assets"])
             if not score.is_finite():
                 raise ValueError("nonfinite validation score")
-            scored.append((score, cid, definition))
-        _, cid, definition = max(scored, key=lambda item: item[0])
-        return cid, definition
+            evidence.append(
+                CandidateEvidence(
+                    cid,
+                    definition["scheme"],
+                    len(account["curve"]),
+                    sum(order["status"] == "filled" for order in account["orders"]),
+                    score,
+                )
+            )
+        baseline = next(item.net_assets for item in evidence if item.scheme == "default")
+        policy = ScientificPolicy.parse(protocol["scientific_policy"])
+        decisions = [
+            judge_candidate(
+                item,
+                initial_cash=Decimal(protocol["initial_cash"]),
+                default_net_assets=baseline,
+                policy=policy,
+            )
+            for item in evidence
+        ]
+        eligible = [
+            (item.net_assets, item.candidate_id, definition)
+            for item, definition, decision in zip(evidence, definitions, decisions)
+            if decision["verdict"] == "eligible_for_locked_test"
+        ]
+        verdict = (
+            "eligible_for_locked_test"
+            if eligible
+            else (
+                "insufficient_evidence"
+                if any(item["verdict"] == "insufficient_evidence" for item in decisions)
+                else "rejected"
+            )
+        )
+        review = {
+            "research_state": "validation_complete"
+            if eligible
+            else "stopped_no_eligible_candidate",
+            "scientific_decision": {
+                "verdict": verdict,
+                "policy": policy.definition(),
+                "candidates": decisions,
+                "evidence_kind": "synthetic",
+                "statistical_significance": "not_assessed",
+            },
+            "promotion_allowed": False,
+            "independent_new_samples": 0,
+        }
+        if not eligible:
+            return review, None
+        _, cid, definition = max(eligible, key=lambda item: item[0])
+        return review, (cid, definition)
+
+    def status(self, eid: str) -> dict:
+        state = self.registry.inspect(eid)
+        completed = {
+            item["candidate_id"]
+            for item in state["attempts"]
+            if item["phase"] == "validation" and item["outcome"] == "succeeded"
+        }
+        if completed != {item["candidate_id"] for item in state["candidates"]}:
+            return {**state, "research_state": "validation_incomplete", "scientific_decision": None}
+        review, winner = self._validation_review(eid)
+        if winner is not None:
+            if any(item["phase"] == "test" for item in state["attempts"]):
+                review["research_state"] = "test_consumed"
+            elif state["locked_candidate"] is not None:
+                review["research_state"] = "candidate_locked"
+        return {**state, **review}
 
     def lock(self, eid: str) -> dict:
-        cid, definition = self._winner(eid)
+        review, winner = self._validation_review(eid)
+        if winner is None:
+            return review
+        cid, definition = winner
         return {
             **self.registry.lock_candidate(eid, cid),
+            **review,
+            "research_state": "candidate_locked",
             "scheme": definition["scheme"],
             "promotion_allowed": False,
         }
@@ -290,8 +371,22 @@ class ResearchLoop:
     def test(self, eid: str) -> dict:
         state, protocol, definitions = self._context(eid)
         if state["locked_candidate"] is None:
+            status = self.status(eid)
+            if status["research_state"] == "stopped_no_eligible_candidate":
+                return {
+                    key: status[key]
+                    for key in (
+                        "research_state",
+                        "scientific_decision",
+                        "promotion_allowed",
+                        "independent_new_samples",
+                    )
+                }
             raise ValueError("test requires candidate lock")
-        cid, definition = self._winner(eid)
+        review, winner = self._validation_review(eid)
+        if winner is None:
+            return review
+        cid, definition = winner
         if cid != state["locked_candidate"]:
             raise ValueError("lock does not match managed validation winner")
         baseline = next(item for item in definitions if item["scheme"] == "default")

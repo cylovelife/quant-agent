@@ -81,6 +81,11 @@ def make_fixture(root: Path) -> Path:
         "candidates": ["default", "quality_first", "valuation_first"],
         "policy": policy,
         "initial_cash": "10000.00",
+        "scientific_policy": {
+            "version": "synthetic_economic_v1",
+            "min_sessions": 4,
+            "min_filled_orders": 1,
+        },
         "budget": {"max_candidates": 3, "max_attempts": 4, "max_attempt_seconds": 30},
     }
     path = root / "manifest.json"

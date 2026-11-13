@@ -62,6 +62,10 @@
   验证后锁定再一次测试，不接入真实封存文件或前瞻账户。
   验证：`python3 -m pytest -q tests/test_research_loop.py`；完整 CLI 构造回执：
   `python3 tests/offline_research_loop.py --output reports/research-loop-demo`（目录必须不存在）。
+- 构造研究的验证候选科学判定见 `src/quant_agent/domain/research/decision.py`：显式冻结
+  `scientific_policy`，覆盖不足、经济拒绝与可锁定候选分开；没有合格候选正常停止，不读取测试文件或消费测试预算。
+  判定仅为构造场景经济筛查，非统计显著性或晋级依据；不自动升级旧 manifest／登记。
+  验证：`python3 -m pytest -q tests/test_research_decision.py tests/test_research_loop.py tests/test_research_loop_gates.py`。
 
 - 试验代码版本衔接见 `src/quant_agent/application/paper/runtime.py`、`docs/research/paper_runtime_handoff.md`；
   只在全新副本追加运行版本，原登记、本金和继承历史不改，缺未结算日／代码再次漂移须暂停。
